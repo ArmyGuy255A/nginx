@@ -21,7 +21,6 @@ RUN apt-get update && \
     zlib1g-dev \
     libssl-dev \
     perl \
-    linux-headers-$(uname -r) \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and extract Nginx, OpenSSL, zlib, and the Nginx modules
