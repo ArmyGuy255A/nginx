@@ -4,7 +4,7 @@ FROM ubuntu:24.04
 # Ensure /etc/passwd and /etc/group contain entries for root
 RUN echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd && \
     echo "root:x:0:" > /etc/group
-
+    
 # Set ARGs for versions
 ARG version=1.16.1
 ARG opensslversion=3.2.1
@@ -13,7 +13,18 @@ ARG zlibversion=1.3.1
 # Install required packages and build dependencies
 RUN apt-get update && \
     apt-get install -y \
-    unzip bash gcc make pcre build-base pcre-dev perl-dev linux-headers \
+    wget \
+    unzip \
+    curl \
+    nano \
+    build-essential \
+    gcc \
+    make \
+    libpcre3 \
+    libpcre3-dev \
+    zlib1g-dev \
+    libssl-dev \
+    perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and extract Nginx, OpenSSL, zlib, and the Nginx modules
