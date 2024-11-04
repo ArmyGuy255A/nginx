@@ -2,9 +2,9 @@
 FROM ubuntu:24.04
 
 # Set ARGs for versions
-ARG NGINX_VERSION=1.16.1
-ARG OPENSSL_VERSION=3.2.1
-ARG ZLIB_VERSION=1.3.1
+ARG version=1.16.1
+ARG opensslversion=3.2.1
+ARG zlibversion=1.3.1
 
 # Install required packages and build dependencies
 RUN apt-get update && \
@@ -24,19 +24,19 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and extract Nginx, OpenSSL, zlib, and the Nginx modules
-RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
-    tar -xf nginx-${NGINX_VERSION}.tar.gz && \
+RUN wget https://nginx.org/download/nginx-${version}.tar.gz && \
+    tar -xf nginx-${version}.tar.gz && \
     wget https://github.com/yaoweibin/ngx_http_substitutions_filter_module/archive/master.zip -O subs.zip && \
     unzip subs.zip && \
     wget https://github.com/openresty/headers-more-nginx-module/archive/master.zip -O headers.zip && \
     unzip headers.zip && \
-    wget https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz && \
-    tar -xf openssl-${OPENSSL_VERSION}.tar.gz && \
-    wget https://www.zlib.net/zlib-${ZLIB_VERSION}.tar.gz && \
-    tar -xf zlib-${ZLIB_VERSION}.tar.gz
+    wget https://www.openssl.org/source/openssl-${opensslversion}.tar.gz && \
+    tar -xf openssl-${opensslversion}.tar.gz && \
+    wget https://www.zlib.net/zlib-${zlibversion}.tar.gz && \
+    tar -xf zlib-${zlibversion}.tar.gz
 
 # Set the working directory to the Nginx source
-WORKDIR /nginx-${NGINX_VERSION}
+WORKDIR /nginx-${version}
 
 # Configure Nginx with desired modules and settings
 RUN ./configure \
@@ -60,8 +60,8 @@ RUN ./configure \
     --with-http_auth_request_module \
     --with-http_addition_module \
     --with-http_sub_module \
-    --with-openssl=../openssl-${OPENSSL_VERSION} \
-    --with-zlib=../zlib-${ZLIB_VERSION} \
+    --with-openssl=../openssl-${opensslversion} \
+    --with-zlib=../zlib-${zlibversion} \
     --add-module=/ngx_http_substitutions_filter_module-master \
     --add-module=/headers-more-nginx-module-master
 
