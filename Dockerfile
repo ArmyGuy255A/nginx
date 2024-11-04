@@ -1,28 +1,46 @@
-FROM alpine as build
+# Use Debian as the base image for flexibility in offline debugging
+FROM debian:stable-slim
 
+# Set ARGs for versions
 ARG version=1.16.1
 ARG opensslversion=3.2.1
 ARG zlibversion=1.3.1
 
-RUN apk add --no-cache unzip bash gcc make pcre build-base pcre-dev perl-dev linux-headers
+# Install required packages and build dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    wget \
+    unzip \
+    curl \
+    nano \
+    build-essential \
+    gcc \
+    make \
+    libpcre3 \
+    libpcre3-dev \
+    zlib1g-dev \
+    libssl-dev \
+    perl \
+    linux-headers-$(uname -r) \
+    && rm -rf /var/lib/apt/lists/*
 
+# Download and extract Nginx, OpenSSL, zlib, and the Nginx modules
 RUN wget https://nginx.org/download/nginx-${version}.tar.gz && \
     tar -xf nginx-${version}.tar.gz && \
     wget https://github.com/yaoweibin/ngx_http_substitutions_filter_module/archive/master.zip -O subs.zip && \
     unzip subs.zip && \
-    wget https://github.com/openresty/headers-more-nginx-module/archive/master.zip && \
-    unzip master.zip && \
+    wget https://github.com/openresty/headers-more-nginx-module/archive/master.zip -O headers.zip && \
+    unzip headers.zip && \
     wget https://www.openssl.org/source/openssl-${opensslversion}.tar.gz && \
     tar -xf openssl-${opensslversion}.tar.gz && \
     wget https://www.zlib.net/zlib-${zlibversion}.tar.gz && \
-    tar -xf zlib-${zlibversion}.tar.gz 
+    tar -xf zlib-${zlibversion}.tar.gz
 
+# Set the working directory to the Nginx source
 WORKDIR /nginx-${version}
-RUN ./configure --with-cc-opt="-static -static-libgcc" \ 
-    --with-ld-opt="-static" \
-    --with-zlib=../zlib-${zlibversion} \
-    --add-module=/ngx_http_substitutions_filter_module-master \
-    --add-module=/headers-more-nginx-module-master \
+
+# Configure Nginx with desired modules and settings
+RUN ./configure \
     --prefix=/usr/share/nginx \
     --sbin-path=/usr/sbin/nginx \
     --conf-path=/etc/nginx/nginx.conf \
@@ -33,9 +51,6 @@ RUN ./configure --with-cc-opt="-static -static-libgcc" \
     --user=www-data \
     --group=www-data \
     --with-compat \
-    --without-mail_pop3_module \
-    --without-mail_imap_module \
-    --without-mail_smtp_module \
     --with-http_ssl_module \
     --with-http_stub_status_module \
     --with-http_gzip_static_module \
@@ -46,34 +61,27 @@ RUN ./configure --with-cc-opt="-static -static-libgcc" \
     --with-http_auth_request_module \
     --with-http_addition_module \
     --with-http_sub_module \
-    --with-openssl=../openssl-${opensslversion} 
+    --with-openssl=../openssl-${opensslversion} \
+    --with-zlib=../zlib-${zlibversion} \
+    --add-module=/ngx_http_substitutions_filter_module-master \
+    --add-module=/headers-more-nginx-module-master
 
-RUN make install
+# Compile and install Nginx
+RUN make && make install
 
-FROM scratch
+# Create necessary directories and add placeholders for runtime use
+RUN mkdir -p /var/www /usr/share/.empty /var/run/.empty /var/lock/.empty
 
-COPY --from=build /usr/sbin/nginx . 
-COPY --from=build /usr/share/nginx /usr/share/nginx
+# Copy configuration files, certificates, and custom templates
 COPY etc /etc
-
-# These are just some minor hacks
-COPY .empty /usr/share/
-COPY .empty /var/run/
-COPY .empty /var/lock/
-
-# Add all 
 COPY www /var/www
-
-# Add in Template NGINX configuration files
 COPY ConfigTemplate /etc/nginx
-
-# Add in Custom NGINX configuration files
 COPY ConfigCustom /etc/nginx
-
-# Add in CA Certs
 COPY Certs/CA /etc/ssl/certs
-
-# Add in Server Certs
 COPY Certs/Server /etc/ssl/certs
 
-ENTRYPOINT ["./nginx", "-g" ,"daemon off;"]
+# Expose port 80 for HTTP
+EXPOSE 80
+
+# Set the entrypoint for Nginx to run in the foreground
+ENTRYPOINT ["/usr/sbin/nginx", "-g", "daemon off;"]
