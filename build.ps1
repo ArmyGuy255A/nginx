@@ -91,9 +91,9 @@ if ($PushToGit) {
 }
 
 # Build and tag the Docker image
-$buildArgNginxVersion = $nginxVersion.Replace(".", "_")
+$buildArgNginxVersion = $nginxVersion
 docker build `
-    --build-arg nginx_version=$buildArgNginxVersion `
+    --build-arg version=$buildArgNginxVersion `
     -t ("{0}:latest" -f $RemoteRegistry) `
     -t ("{0}:{1}" -f $RemoteRegistry, $nginxVersion) `
     -t ("{0}:{1}v{2}" -f $RemoteRegistry, $nginxVersion, $newBuildVersion) .

@@ -54,7 +54,7 @@ FROM scratch
 
 COPY --from=build /usr/sbin/nginx . 
 COPY --from=build /usr/share/nginx /usr/share/nginx
-# COPY etc /etc
+COPY etc /etc
 
 # These are just some minor hacks
 RUN echo "" > /usr/share/.empty \
