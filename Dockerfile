@@ -57,9 +57,8 @@ COPY --from=build /usr/share/nginx /usr/share/nginx
 COPY etc /etc
 
 # These are just some minor hacks
-RUN echo "" > /usr/share/.empty \
-    && echo "" > /etc/.empty \
-    && echo "" > /var/run/.empty \
-    && echo "" > /var/lock/.empty
+COPY .empty /usr/share/
+COPY .empty /var/run/
+COPY .empty /var/lock/
 
 ENTRYPOINT ["./nginx", "-g" ,"daemon off;"]
