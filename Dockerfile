@@ -81,8 +81,8 @@ COPY Certs/CA /etc/ssl/certs
 COPY Certs/Server /etc/ssl/certs
 
 # Ensure /etc/passwd and /etc/group contain entries for root
-RUN echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd && \
-    echo "root:x:0:" > /etc/group
+RUN echo "www-data:x:0:0:root:/www-data:/bin/bash" > /etc/passwd && \
+    echo "www-data:x:0:" > /etc/group
 
 # Expose port 80 for HTTP
 EXPOSE 80
