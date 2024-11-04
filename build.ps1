@@ -96,10 +96,11 @@ if ($PushToGit) {
 $buildArgNginxVersion = $nginxVersion
 $dockerfile = "Dockerfile.{0}" -f $base.ToLower()
 docker build `
+    -f $dockerfile `
     --build-arg version=$buildArgNginxVersion `
     -t ("{0}:latest" -f $RemoteRegistry, $base) `
     -t ("{0}:{1}-{2}" -f $RemoteRegistry, $base, $nginxVersion) `
-    -t ("{0}:{1}-{2}v{3}" -f $RemoteRegistry, $base, $nginxVersion, $newBuildVersion) $dockerfile
+    -t ("{0}:{1}-{2}v{3}" -f $RemoteRegistry, $base, $nginxVersion, $newBuildVersion) .
 
 if ($PushToRegistry) {
     # Push the Docker image to the Registry
