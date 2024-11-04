@@ -1,0 +1,6 @@
+Add your server certificates into this folder. Ensure that you include the .cer and .key files for each certificate.
+
+You can reference them like: 
+
+/etc/ssl/certs/wildard.crt
+/etc/ssl/certs/wildard.key

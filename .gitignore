@@ -3,8 +3,8 @@
 *.iso
 
 # Ignore the plugins directory itself
-[Cc]erts/*
-![Cc]erts/CA/
+[Cc]erts/Server/*
+[Cc]erts/CA/*
 
 # Ignore all .conf files in the Custom directory, but allow the Template Folder and all its contents
 Custom/*

@@ -63,7 +63,17 @@ COPY .empty /var/lock/
 
 # Add all 
 COPY www /var/www
-# Add in NGINX configuration files
-COPY Custom/nginx.conf /etc/nginx/nginx.conf
+
+# Add in Template NGINX configuration files
+COPY ConfigTemplate /etc/nginx
+
+# Add in Custom NGINX configuration files
+COPY ConfigCustom /etc/nginx
+
+# Add in CA Certs
+COPY Certs/CA /etc/ssl/certs
+
+# Add in Server Certs
+COPY Certs/Server /etc/ssl/certs
 
 ENTRYPOINT ["./nginx", "-g" ,"daemon off;"]
