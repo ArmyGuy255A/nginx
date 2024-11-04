@@ -11,13 +11,13 @@ foreach ($volume in $volumes) {
     docker volume create $volume
 }
 
-docker create -p 80:80
+docker create -p 80:80 `
 -p 443:443 `
 --name nginx `
--v 'nginx-web:/var/www/:/var/www/'
--v 'nginx-config:/etc/nginx/:/etc/nginx/'
--v 'nginx-logs:/var/log/nginx/:/var/log/nginx/'
--v 'nginx-certs:/etc/ssl/certs:/etc/ssl/certs'
+-v 'nginx-web:/var/www/' `
+-v 'nginx-config:/etc/nginx/' `
+-v 'nginx-logs:/var/log/nginx/' `
+-v 'nginx-certs:/etc/ssl/certs' `
 armyguy255a/nginx:$nginxVersion
 
 # Copy Lab/server1.conf to /usr/share/openfore/conf/nginx.xml
