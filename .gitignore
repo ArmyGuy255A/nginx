@@ -1,0 +1,18 @@
+# Ignore all .jar files in the plugins directory
+*.jar
+*.iso
+
+# Ignore the plugins directory itself
+[Cc]erts/*
+![Cc]erts/CA/
+
+# Ignore all .conf files in the Custom directory, but allow the Template Folder and all its contents
+Custom/*
+!Custom/Template/
+
+
+# Include all .placeholder files
+!*.placeholder
+
+# Ignore the windows folder where all Windows files are downloaded
+windows/

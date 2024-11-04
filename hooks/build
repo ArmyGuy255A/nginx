@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# Read the version from the file, an replace the dots with underscores
+OPENFIRE_VERSION=$(cat openfire_version.txt | sed 's/\./_/g')
+
+# Docker Variable Reference: https://docs.docker.com/docker-hub/builds/advanced/
+
+# Build the Docker image with the build argument
+docker build --build-arg OPENFIRE_VERSION=$OPENFIRE_VERSION -t $IMAGE_NAME -t $DOCKER_REPO:latest .
