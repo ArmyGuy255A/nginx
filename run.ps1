@@ -1,28 +1,26 @@
-$openfireVersion = Get-Content openfire_version.txt
+$nginxVersion = Get-Content nginx_version.txt
 
-docker stop openfire
-docker rm openfire -v
-docker volume rm openfire-data
-docker volume create openfire-data
+docker stop nginx
+docker rm nginx -v
+docker volume rm nginx-web 
+$volumes = $("nginx-web", "nginx-config", "nginx-logs", "nginx-certs")
+foreach ($volume in $volumes) {
+    docker volume rm $volume
+}
+foreach ($volume in $volumes) {
+    docker volume create $volume
+}
 
-docker create -p 5005:5005 `
--p 5222:5222 `
--p 5223:5223 `
--p 5262:5262 `
--p 5269:5269 `
--p 5270:5270 `
--p 5275:5275 `
--p 5276:5276 `
--p 7070:7070 `
--p 7443:7443 `
--p 7777:7777 `
--p 9090:9090 `
--p 9091:9091 `
---name openfire `
--v 'openfire-data:/usr/share/openfire' `
-armyguy255a/openfire:$openfireVersion
+docker create -p 80:80
+-p 443:443 `
+--name nginx `
+-v 'nginx-web:/var/www/:/var/www/'
+-v 'nginx-config:/etc/nginx/:/etc/nginx/'
+-v 'nginx-logs:/var/log/nginx/:/var/log/nginx/'
+-v 'nginx-certs:/etc/ssl/certs:/etc/ssl/certs'
+armyguy255a/nginx:$nginxVersion
 
-# Copy Lab/server1.conf to /usr/share/openfore/conf/openfire.xml
-# docker cp Lab/server1.conf openfire:/usr/share/openfire/conf/openfire.xml
+# Copy Lab/server1.conf to /usr/share/openfore/conf/nginx.xml
+# docker cp Lab/server1.conf nginx:/usr/share/nginx/conf/nginx.xml
 
-docker start openfire
+docker start nginx

@@ -4,18 +4,18 @@
 trap 'terminate' SIGTERM SIGINT
 
 terminate() {
-    echo "Caught termination signal! Stopping Openfire..."
-    # Send SIGTERM to Openfire process
+    echo "Caught termination signal! Stopping Nginx..."
+    # Send SIGTERM to Nginx process
     kill -SIGTERM "$child" 2>/dev/null
     wait "$child"
-    echo "Openfire stopped."
+    echo "Nginx stopped."
     exit 0
 }
 
-# Start Openfire in the background
-echo "Starting Openfire..."
-/usr/share/openfire/bin/openfire.sh -debug &
+# Start Nginx in the background
+echo "Starting Nginx..."
+/nginx/nginx -g daemon off &
 
-# Capture the Openfire process PID
+# Capture the Nginx process PID
 child=$!
 wait "$child"
