@@ -8,7 +8,9 @@ param (
     $PushToRegistry = $false,
     [Parameter()]
     [switch]
-    $PushToGit = $false
+    $PushToGit = $false,
+    [string]
+    $base = "alpine"
 )
 
 # Read the nginx version
@@ -92,11 +94,12 @@ if ($PushToGit) {
 
 # Build and tag the Docker image
 $buildArgNginxVersion = $nginxVersion
+$dockerfile = "Dockerfile.{0}" -f $base.ToLower()
 docker build `
     --build-arg version=$buildArgNginxVersion `
-    -t ("{0}:latest" -f $RemoteRegistry) `
-    -t ("{0}:{1}" -f $RemoteRegistry, $nginxVersion) `
-    -t ("{0}:{1}v{2}" -f $RemoteRegistry, $nginxVersion, $newBuildVersion) .
+    -t ("{0}:latest" -f $RemoteRegistry, $base) `
+    -t ("{0}:{1}-{2}" -f $RemoteRegistry, $base, $nginxVersion) `
+    -t ("{0}:{1}-{2}v{3}" -f $RemoteRegistry, $base, $nginxVersion, $newBuildVersion) $dockerfile
 
 if ($PushToRegistry) {
     # Push the Docker image to the Registry
