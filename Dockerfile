@@ -1,6 +1,7 @@
 # Use Ubuntu 24.04 as the base image
 FROM ubuntu:24.04
 
+
 # Set ARGs for versions
 ARG version=1.16.1
 ARG opensslversion=3.2.1
@@ -78,6 +79,10 @@ COPY ConfigTemplate /etc/nginx
 COPY ConfigCustom /etc/nginx
 COPY Certs/CA /etc/ssl/certs
 COPY Certs/Server /etc/ssl/certs
+
+# Ensure /etc/passwd and /etc/group contain entries for root
+RUN echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd && \
+    echo "root:x:0:" > /etc/group
 
 # Expose port 80 for HTTP
 EXPOSE 80
