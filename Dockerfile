@@ -61,4 +61,8 @@ COPY .empty /usr/share/
 COPY .empty /var/run/
 COPY .empty /var/lock/
 
+# Add in NGINX configuration files
+COPY www/index.html /var/www/index.html
+COPY Custom/nginx.conf /etc/nginx/nginx.conf
+
 ENTRYPOINT ["./nginx", "-g" ,"daemon off;"]
