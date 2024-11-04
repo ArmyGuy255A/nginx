@@ -1,5 +1,5 @@
 $nginxVersion = Get-Content nginx_version.txt
-
+$distro = "alpine"
 docker stop nginx
 docker rm nginx -v
 docker volume rm nginx-web 
@@ -18,7 +18,7 @@ docker create -p 80:80 `
 -v 'nginx-config:/etc/nginx/' `
 -v 'nginx-logs:/var/log/nginx/' `
 -v 'nginx-certs:/etc/ssl/certs' `
-armyguy255a/nginx:$nginxVersion
+armyguy255a/nginx:$distro-$nginxVersion
 
 # Copy Lab/server1.conf to /usr/share/openfore/conf/nginx.xml
 # docker cp Lab/server1.conf nginx:/usr/share/nginx/conf/nginx.xml
