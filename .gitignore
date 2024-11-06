@@ -1,6 +1,7 @@
 # Ignore all .jar files in the plugins directory
 *.jar
 *.iso
+*.tar.gz
 
 # Ignore the plugins directory itself
 [Cc]erts/Server/*
@@ -11,8 +12,28 @@ Custom/*
 !Custom/Template/
 
 
-# Include all .placeholder files
-!*.placeholder
 
 # Ignore the windows folder where all Windows files are downloaded
 windows/
+
+# Ignore tar.gz files
+*.tar.gz
+
+# Ignore all certificate files
+*.crt
+*.cer
+*.pem
+*.key
+
+# Ignore everything in the Services directory except for the http and scripts directory
+Services/*
+!Services/http/
+!Services/scripts/
+!Services/ssl/
+!Services/ssl/ca
+!Services/ssl/ca-bundle
+!Services/Makefile
+
+
+# Include all .placeholder files everywhere
+!.placeholder

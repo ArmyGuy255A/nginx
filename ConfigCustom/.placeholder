@@ -1,1 +1,0 @@
-All Custom configs in this folder will be added to the container image at build time. The image should contain an nginx.conf file that will be used for the baseline configuration.

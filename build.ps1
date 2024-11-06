@@ -104,5 +104,5 @@ docker build `
 
 if ($PushToRegistry) {
     # Push the Docker image to the Registry
-    docker push ("{0}:{1}" -f $remoteRegistry, $nginxVersion) 
+    docker push ("{0}:{1}{2}" -f $remoteRegistry, $base, $nginxVersion) 
 }
