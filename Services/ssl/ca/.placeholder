@@ -1,0 +1,1 @@
+Add your CA Certificates in this folder. They'll all be bundled into a single file called `ca-bundle.crt` in the ssl/ca-bundle folder.

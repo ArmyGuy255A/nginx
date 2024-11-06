@@ -5,8 +5,8 @@ DOCKER_IMAGE = armyguy255a/nginx:alpine-1.26.2
 IMAGE_FILE = armyguy255a--nginx_alpine-1.26.2.tar.gz
 DOCKER_CONTAINER = nginx-$(shell basename $(CURDIR))
 CURRENT_PATH = $(shell pwd)
-SSL_PATH = $(shell find . .. -type d -name ssl -print -quit | xargs realpath)
-WWW_PATH = $(shell find . -type d -name www -print -quit | xargs realpath)
+SSL_PATH =$(shell dir=$$(find . .. -type d -name ssl -print -quit 2>/dev/null); [ -n "$$dir" ] && realpath "$$dir" || echo "")
+WWW_PATH = $(shell dir=$$(find . -type d -name www -print -quit 2>/dev/null); [ -n "$$dir" ] && realpath "$$dir" || echo "")
 PORT_MAPPINGS = $(shell cat ports.txt | xargs -I {} echo "-p {}")
 
 # Download log files from the container
@@ -19,6 +19,15 @@ download-logs:
 	else \
 		echo "Warning: Container $(DOCKER_CONTAINER) does not exist. Skipping log download."; \
 	fi
+
+test:
+	@echo "Testing $(DOCKER_CONTAINER)..."
+	@echo "Docker image: $(DOCKER_IMAGE)"
+	@echo "Docker container: $(DOCKER_CONTAINER)"
+	@echo "Current path: $(CURRENT_PATH)"
+	@echo "SSL path: $(SSL_PATH)"
+	@echo "WWW path: $(WWW_PATH)"
+	@echo "Port mappings: $(PORT_MAPPINGS)"
 
 # Load Docker image
 load-image:
@@ -92,17 +101,19 @@ copy-configs:
 	@echo "Configuration files copied."
 
 compile-ca-bundle:
-	@echo "Compiling SSL certificates called ca-bundle.crt"
-	@../scripts/compile_ca_bundle.sh
-	@echo "SSL certificates compiled to Services/ssl/ca-bundle/ca-bundle.crt"
+	@echo "Compiling CA certificates called ca-bundle.crt"
+	@../scripts/compile_ca_bundle.sh $(SSL_PATH)
+	@echo "CA certificates compiled to Services/ssl/ca-bundle/ca-bundle.crt"
+	@echo "------------------------------------------------------------------------------"
 	@echo "Reference this in your nginx by adding the following line to your nginx.conf:"
 	@echo ""
 	@echo "ssl_client_certificate /etc/ssl/certs/ca-bundle.crt;"
 	@echo "http blocks:"
 	@echo "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-bundle.crt;"
+	@echo "------------------------------------------------------------------------------"
 
 # Copy any used SSL files to the Docker container
-copy-ssl: compile_ca_bundle
+copy-ssl: compile-ca-bundle
 	@echo "Copying SSL certificates to $(DOCKER_CONTAINER) from $(SSL_PATH)..."
 	@../scripts/copy_ssl_certs.sh $(DOCKER_CONTAINER) $(CURRENT_PATH) $(SSL_PATH)
 	@echo "SSL certificates copied."
@@ -124,6 +135,12 @@ debug: load-image clean-container create-container copy-configs copy-ssl copy-ww
 # Full build and setup process
 all: load-image clean-container create-container copy-configs copy-ssl copy-www start
 	@echo "Full setup complete. $(DOCKER_CONTAINER) is running."
+
+# Alias for the full build and setup process
+up: all
+
+# Alias for stopping the container
+down: stop
 
 # Default target
 run: all

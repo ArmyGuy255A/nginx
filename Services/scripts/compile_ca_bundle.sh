@@ -7,7 +7,7 @@ BASE_DIR=$(realpath "$SCRIPT_DIR/..")
 # Define SSL input and output directories
 CA_DIR="$BASE_DIR/ssl/ca"
 BUNDLE_DIR="$BASE_DIR/ssl/ca-bundle"
-BUNDLE_FILE="$BUNDLE_DIR/ca-certificates.crt"
+BUNDLE_FILE="$BUNDLE_DIR/ca-bundle.crt"
 
 # Ensure the input directory exists
 if [ ! -d "$CA_DIR" ]; then

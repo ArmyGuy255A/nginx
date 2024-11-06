@@ -37,8 +37,21 @@ if [ ! -d "$SSL_DIR" ]; then
     exit 1
 fi
 
+# Define a list of certificate-related directives
+ssl_directives=(
+    proxy_ssl_trusted_certificate
+    ssl_client_certificate
+    ssl_certificate
+    ssl_certificate_key
+    ssl_trusted_certificate
+)
+
+# Build the grep pattern dynamically
+pattern=$(printf "%s\s+/etc/ssl/certs/[^;]+\\\.(crt|key)|" "${ssl_directives[@]}")
+pattern=${pattern%|} # Remove the trailing pipe
+
 # Find all .crt and .key files referenced in the .conf files
-cert_paths=$(grep -hoE 'ssl_client_certificate\s+/etc/ssl/certs/[^;]+\.crt|ssl_certificate\s+/etc/ssl/certs/[^;]+\.crt|ssl_certificate_key\s+/etc/ssl/certs/[^;]+\.key' "$CONF_DIR"/*.conf | awk '{print $2}')
+cert_paths=$(grep -hoE "$pattern" "$CONF_DIR"/*.conf | awk '{print $2}')
 
 # Check if grep found any certificates
 if [ -z "$cert_paths" ]; then
@@ -54,7 +67,7 @@ for cert_path in $cert_files; do
     cert_file=$(basename "$cert_path")
     
     # Search for the certificate file in the SSL directory or its subdirectories
-    found_file=$(find "$SSL_DIR" -type f -name "$cert_file" | head -1)
+    found_file=$(find "$SSL_DIR" -type f -name "$cert_file" -print -quit 2>/dev/null)
     
     if [ -n "$found_file" ]; then
         echo "Copying $found_file to Docker container $DOCKER_CONTAINER..."

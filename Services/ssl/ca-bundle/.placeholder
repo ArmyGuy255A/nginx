@@ -1,0 +1,1 @@
+This folder will hold a copy of the auto-generated ca-bundle.crt file that is generated from the scripts/copy_ssl_certs.sh script.
