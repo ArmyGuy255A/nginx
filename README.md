@@ -1,7 +1,3 @@
-Here’s an enhanced and more professional version of your README file:
-
----
-
 # **NGINX Custom Proxy Server**
 
 A custom NGINX image preconfigured with all necessary modules and tools to create a robust and scalable reverse proxy server.
