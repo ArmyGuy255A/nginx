@@ -1,82 +1,172 @@
-# nginx
-A custom NGINX image loaded with all of the goodies I need to make a success proxy server in my environments.
+Here’s an enhanced and more professional version of your README file:
 
-# Using this image
+---
 
-Start in the Services Directory. The services directory contains a http and scripts sub-directory that store necessary files to run and customize the container. \
-The http directory contains an nginx.conf file that is used to serve a customized nginx configuration. Take note of the www directory that contains custom static html files that will be served by the nginx server. \
-The scripts directory contain helper scripts that are used to automate the addition of all .conf, www, and ssl files to the container. The directory structure should look like this:
+# **NGINX Custom Proxy Server**
 
-Services: This is the root directory that you should be working in. \
-Services\http : This directory serves HTTP content on the ports specified in ports.txt \
-Services\http\ports.txt : This file contains the ports that the HTTP server will listen on. \
-Services\http\nginx.conf : This is the default file used to run the server. Feel free to customize this. \
-services\http\ssl-internal.conf : This file contains an SSL usage directive and the helper scripts will find it, and inject it into the container. \
-Services\http\www : This is where you would put any static HTML assets. \
-Services\http\www\index.html : This is an example customized HTML page. \
-Services\http\Makefile : This contains various commands to use for building and testing the container \
-Services\scripts : No need to touch anything in here. These scripts help automate building and updating the customized containers \
-Services\ssl : This folder holds all of the SSL certificates. The configs should reference these via `/etc/ssl/certs/some-cert.crt` \
-Services\ssl\ca : This folder holds all of the client certs needed to avoid certificate issues when Reverse Proxying. \
-Services\ssl\ca-bundle : This folder holds all of the CA certs needed to avoid certificate issues when Reverse Proxying. \
+A custom NGINX image preconfigured with all necessary modules and tools to create a robust and scalable reverse proxy server.
 
-## Building a new service
+---
 
-The easiest way to get started is to copy the `http` directory and rename it to the name of your service. For example, `https`. \
-Then, customize the `nginx.conf` file so that it serves or proxies the content you need. \
-Navigate to the `https` directory and you can run `make debug` or `make all` to build the container. The various explanations of the Makefile are listed below.
+## **Overview**
 
-### Service-Specific Makefile
+This repository provides an easy-to-use framework for building and managing custom NGINX-based proxy servers. The provided tools and configuration files enable you to handle HTTP, HTTPS, SSL, and certificate management seamlessly in complex environments.
 
-There may be some additional commands added over time, however, these commands should not change.
+---
+
+## **Directory Structure**
+
+The project is organized as follows:
+
+| **Directory/File**                  | **Description**                                                                                     |
+|-------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `Services/`                         | Root directory containing service-specific configurations and helper scripts.                       |
+| `Services/http/`                    | Default service directory for HTTP configuration.                                                   |
+| `Services/http/ports.txt`           | Defines the ports that the HTTP server listens on.                                                  |
+| `Services/http/nginx.conf`          | Primary NGINX configuration file for the HTTP service. Customizable for service-specific needs.     |
+| `Services/http/www/`                | Directory for static HTML assets served by the NGINX server.                                        |
+| `Services/http/www/index.html`      | Example static HTML file served by the HTTP server.                                                 |
+| `Services/http/Makefile`            | Contains Makefile targets for building, running, and managing the HTTP service container.           |
+| `Services/scripts/`                 | Directory containing helper scripts for automating tasks such as copying files and certificates.    |
+| `Services/ssl/`                     | Directory containing SSL certificates.                                                             |
+| `Services/ssl/ca/`                  | Holds client certificates required for reverse proxying.                                            |
+| `Services/ssl/ca-bundle/`           | Stores compiled bundles of CA certificates.                                                        |
+
+---
+
+## **Getting Started**
+
+### **Building a New Service**
+
+1. **Copy and Rename the Default Service**:
+   - Start by copying the `http` directory and renaming it to your desired service name (e.g., `https`).
+   - Example:
+     ```bash
+     cp -r Services/http Services/https
+     ```
+
+2. **Customize the Configuration**:
+   - Modify `nginx.conf` to suit the requirements of your new service.
+   - Update `ports.txt` with the desired ports for the new service.
+
+3. **Build and Run**:
+   - Navigate to the new service directory and run:
+     ```bash
+     cd Services/https
+     make all
+     ```
+
+---
+
+### **Makefile Targets**
+
+The Makefile in each service directory provides commands to streamline container management.
 
 | **Target**              | **Description**                                                                                                 |
 |-------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `.PHONY`                | Declares targets that are not files, ensuring they run every time.                                             |
-| `download-logs`         | Downloads logs from the container to `./logs` if the container exists.                                         |
+| `.PHONY`                | Declares non-file targets to ensure they run every time.                                                       |
+| `download-logs`         | Downloads container logs to the `./logs` directory.                                                            |
 | `load-image`            | Loads the Docker image from a specified tar file.                                                              |
-| `stop`                  | Stops the container, downloading logs before stopping.                                                         |
+| `stop`                  | Stops the container and optionally downloads logs before stopping.                                             |
 | `start`                 | Starts the container if it’s stopped.                                                                          |
-| `start-attach`          | Starts and attaches to the container, showing live log output.                                                 |
-| `restart`               | Restarts the container by stopping and then starting it.                                                       |
-| `remove`                | Removes the container and associated anonymous volumes.                                                        |
-| `shell`                 | Opens an interactive shell inside the container for debugging or inspection.                                   |
-| `remove-volumes`        | Deletes volumes associated with the container.                                                                 |
-| `clean-container`       | Stops, removes the container, and cleans up its volumes.                                                       |
-| `create-container`      | Creates a new container with configured volumes and port mappings.                                             |
-| `copy-configs`          | Copies `.conf` files to the container’s `/etc/nginx` directory.                                                |
-| `copy-ssl`              | Copies SSL certificates from the specified path to the container.                                              |
-| `copy-www`              | Copies website files from the `www` directory to the container’s `/var/www/` directory.                        |
+| `start-attach`          | Starts and attaches to the container, displaying live logs.                                                    |
+| `restart`               | Restarts the container by stopping and starting it.                                                            |
+| `remove`                | Removes the container and its associated anonymous volumes.                                                    |
+| `shell`                 | Opens an interactive shell session inside the container.                                                       |
+| `remove-volumes`        | Deletes Docker volumes associated with the container.                                                          |
+| `clean-container`       | Stops the container, removes it, and cleans up its volumes.                                                    |
+| `create-container`      | Creates a new container with predefined volumes and port mappings.                                             |
+| `copy-configs`          | Copies configuration files from the local directory to the container.                                          |
+| `copy-ssl`              | Copies SSL certificates from the `ssl` directory into the container.                                           |
+| `copy-www`              | Copies static files from the `www` directory to the container’s `/var/www/`.                                   |
 | `update`                | Updates configuration files and certificates in the container, then restarts it.                               |
-| `debug`                 | Sets up the container for debugging by loading, creating, and attaching to it with live logs.                  |
-| `all`                   | Executes a full setup by loading, cleaning, creating, and starting the container with all necessary files.      |
-| `run`                   | Runs the `all` target, ensuring the container is fully set up and running.                                     |
+| `debug`                 | Runs the container in debug mode, attaching live logs for troubleshooting.                                     |
+| `all`                   | Builds, cleans, and starts the container, loading all necessary configurations.                                |
+| `up`                    | Alias for `all`                                                                                                |
+| `down`                  | Alias for `stop                                                                                                |
+| `run`                   | Runs the `all` target to fully set up and start the container.                                                 |
 
-## Running http
+---
 
-To run the stock http server, navigate to the `http` directory and run `make all`. This will build the container and start it. \
+### **Using the HTTP Service**
 
+1. **Build and Start**:
+   ```bash
+   cd Services/http
+   make all
+   ```
+
+2. **Stop the Container**:
+   ```bash
+   make stop
+   ```
+
+3. **Debug Mode**:
+   Run the container with live logs:
+   ```bash
+   make debug
+   ```
+   - Press `Ctrl+C` to stop.
+   - Press `Ctrl+Z` to detach and keep it running.
+
+---
+
+## **Certificate Management**
+
+### **Certificate Compilation**
+
+Certificates are automatically compiled into a CA bundle by the `compile-ca-bundle.sh` script. This script combines all certificates in the `Services/ssl/ca` directory into a single bundle located in `Services/ssl/ca-bundle/ca-certificates.crt`.
+
+To run:
 ```bash
-cd Services\http
-make all
+cd Services/scripts
+./compile-ca-bundle.sh
 ```
 
-To stop the container, run `make stop`. \
+### **Proxy SSL Configuration**
 
-```bash
-cd Services\http
-make stop
-```
+NGINX is configured to support dynamic SSL handling. Ensure that:
+- All certificates referenced in `.conf` files are located in the `Services/ssl/` directory.
+- Custom SSL directives are automatically parsed and copied to the container using helper scripts.
 
-To run the container in debug mode, run `make debug`. \
+---
 
-```bash
-cd Services\http
-make debug
-Press Ctrl+C to exit
-Press Ctrl+Z to detach
-```
+## **Log Management**
 
-# Attribution
+Log files can be downloaded or viewed live:
 
-The Dockerfile used in this build is pulled from : https://github.com/byjg/docker-nginx-extras
+1. **Download Logs**:
+   ```bash
+   make download-logs
+   ```
+
+2. **Live Logs**:
+   Use the `make debug` command to view logs in real time.
+
+---
+
+## **Troubleshooting**
+
+1. **Verify Configuration**:
+   Run:
+   ```bash
+   nginx -t
+   ```
+
+2. **Check Logs**:
+   Use the `debug` target or inspect the log files in `/var/log/nginx`.
+
+3. **Certificate Issues**:
+   - Ensure certificates are correctly referenced in `.conf` files.
+   - Use `compile-ca-bundle.sh` to consolidate CA certificates.
+
+---
+
+## **Attribution**
+
+The Dockerfile used in this build is based on:  
+[ByJG Docker NGINX Extras](https://github.com/byjg/docker-nginx-extras)
+
+---
+
+This updated README provides a structured, professional, and comprehensive guide for building and managing your custom NGINX proxy server environment.
