@@ -47,6 +47,23 @@ up: openfire-up http-up https-up sitaware-up smtp-up
 
 down: openfire-down http-down https-down sitaware-down smtp-down
 
+.PHONY: service
+
+# Create a new service by copying the http directory
+service:
+	@if [ -z "$(name)" ]; then \
+		echo "Error: Please specify a service name with 'make service name=<service_name>'"; \
+		exit 1; \
+	fi; \
+	if [ -d "$(name)" ]; then \
+		echo "Error: The service '$(name)' already exists."; \
+		exit 1; \
+	fi; \
+	echo "Creating service '$(name)'..."; \
+	cp -r http $(name); \
+	echo "Service '$(name)' created successfully. Customize 'Services/$(name)/nginx.conf' and 'ports.txt' as needed."
+
+
 clean:
 	make -C openfire clean-container
 	make -C http clean-container
