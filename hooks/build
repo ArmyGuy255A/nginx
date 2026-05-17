@@ -1,9 +1,0 @@
-#!/bin/sh
-
-# Read the version from the file, an replace the dots with underscores
-NGINX_VERSION=$(cat nginx_version.txt)
-
-# Docker Variable Reference: https://docs.docker.com/docker-hub/builds/advanced/
-
-# Build the Docker image with the build argument
-docker build --build-arg NGINX_VERSION=$NGINX_VERSION -t $IMAGE_NAME -t $DOCKER_REPO:latest .
