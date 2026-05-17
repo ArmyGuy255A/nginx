@@ -1,61 +1,95 @@
 name: Deploy edge-nginx to ACA
 
-# Rolls a new container image tag out to the appeid-edge-prod Container App
-# without disturbing the Terraform-managed infra (TF ignores image changes
-# on the container resource via lifecycle.ignore_changes).
+# Polls Docker Hub for the latest digest of armyguy255a/nginx:appeid-latest
+# and rolls the appeid-edge-prod Container App to it when (and only when)
+# the digest has actually changed. Image rolls are decoupled from CI:
+# Docker Hub Automated Builds run on tag push at their own pace, and this
+# workflow picks up the result on its next tick.
 #
 # Triggers:
-#   * workflow_dispatch — manual, with explicit tag (default `latest`)
-#   * repository_dispatch (type: docker-hub-push) — fired by Docker Hub's
-#     webhook on successful Automated Build. Configure in Docker Hub:
-#       Webhooks -> Add -> URL: https://api.github.com/repos/<owner>/<repo>/dispatches
-#       (needs a PAT in Authorization header; or use a GitHub App)
+#   * schedule       — hourly poll (dial down to '0 */6 * * *' for laxer
+#                      cadence, or '0 12 * * *' for once-daily).
+#   * workflow_dispatch — manual nudge; --force=true re-deploys even if
+#                      the digest hasn't changed.
 #
 # Auth: federated OIDC against the AAD service principal whose object ID
-# is stored as the AZURE_CLIENT_ID GitHub Actions variable. The principal
-# must have Contributor on the appeid-edge-prod resource group (granted
-# via the optional `github_actions_principal_id` Terraform variable in
-# terraform/prod).
+# is the AZURE_CLIENT_ID Actions variable. Principal must have Contributor
+# on the appeid-edge-prod resource group (granted by
+# var.github_actions_principal_id in terraform/prod).
 
 on:
+  schedule:
+    # Hourly at :07 so we don't stampede the top of the hour cron pool.
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
-      image_tag:
-        description: 'Image tag to deploy (e.g. latest, 1.26.2-<sha>)'
-        required: true
-        default: 'latest'
-  repository_dispatch:
-    types: [docker-hub-push]
+      image_ref:
+        description: 'Override image (e.g. armyguy255a/nginx:appeid-1.26.2.5). Empty = use appeid-latest.'
+        required: false
+        default: ''
+      force:
+        description: 'Re-deploy even if the digest matches what is already live.'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
-  id-token: write   # required for Azure federated OIDC
+  id-token: write
   contents: read
 
 env:
-  RESOURCE_GROUP: appeid-edge-prod
-  CONTAINER_APP: edge-nginx
-  IMAGE_REPOSITORY: docker.io/armyguy255a/nginx
+  RESOURCE_GROUP:   appeid-edge-prod
+  CONTAINER_APP:    edge-nginx
+  IMAGE_REPOSITORY: armyguy255a/nginx
+  TRACKED_TAG:      appeid-latest
+
+# One deploy at a time; cancel-in-progress is OFF so a hand-rolled
+# workflow_dispatch never aborts an active scheduled roll mid-flight.
+concurrency:
+  group: deploy-aca
+  cancel-in-progress: false
 
 jobs:
   deploy:
-    name: az containerapp update --image
+    name: Reconcile ACA image to latest Docker Hub digest
     runs-on: ubuntu-latest
 
     steps:
-      - name: Resolve image tag
-        id: tag
+      - name: Resolve target image
+        id: target
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          OVERRIDE='${{ inputs.image_ref }}'
+          if [ -n "$OVERRIDE" ]; then
+            echo "Using manual override: $OVERRIDE"
+            echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            # Override is a tag or @digest; we won't compare digests when
+            # an override is supplied — the user has spoken.
+            echo "compare=false" >> "$GITHUB_OUTPUT"
           else
-            # Docker Hub webhook payload puts the tag at .push_data.tag —
-            # the dispatcher needs to forward it as client_payload.tag.
-            TAG="${{ github.event.client_payload.tag }}"
-            if [ -z "$TAG" ]; then TAG="latest"; fi
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Tracking ${IMAGE_REPOSITORY}:${TRACKED_TAG}"
+            echo "ref=${IMAGE_REPOSITORY}:${TRACKED_TAG}" >> "$GITHUB_OUTPUT"
+            echo "compare=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "Resolved image tag: $(grep ^tag= "$GITHUB_OUTPUT" | cut -d= -f2-)"
+
+      - name: Fetch Docker Hub digest for the tracked tag
+        id: hub
+        if: steps.target.outputs.compare == 'true'
+        run: |
+          set -euo pipefail
+          # Docker Hub's public JSON API — no auth needed for a public image.
+          # `images` is a per-architecture array; we pin amd64 since ACA's
+          # Consumption plan runs Linux x64.
+          URL="https://hub.docker.com/v2/repositories/${IMAGE_REPOSITORY}/tags/${TRACKED_TAG}"
+          JSON="$(curl -fsSL "$URL")"
+          DIGEST="$(echo "$JSON" | jq -r '.images[] | select(.architecture=="amd64") | .digest')"
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::error::Could not read amd64 digest for ${IMAGE_REPOSITORY}:${TRACKED_TAG}"
+            echo "$JSON" | jq .
+            exit 1
+          fi
+          echo "Docker Hub digest: $DIGEST"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -64,10 +98,46 @@ jobs:
           tenant-id:       ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Update Container App image
+      - name: Read ACA's current image
+        id: aca
         run: |
           set -euo pipefail
-          NEW_IMAGE="${IMAGE_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+          CURRENT=$(az containerapp show \
+            --name "${CONTAINER_APP}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --query 'properties.template.containers[0].image' -o tsv)
+          echo "ACA currently running: $CURRENT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if digest already matches
+        id: gate
+        if: steps.target.outputs.compare == 'true' && inputs.force != true
+        run: |
+          set -euo pipefail
+          CURRENT='${{ steps.aca.outputs.current }}'
+          DIGEST='${{ steps.hub.outputs.digest }}'
+          # CURRENT will look like one of:
+          #   armyguy255a/nginx:appeid-latest                 (tag form)
+          #   armyguy255a/nginx@sha256:abc...                 (digest form, what we always set)
+          #   docker.io/armyguy255a/nginx@sha256:abc...       (with registry prefix)
+          # The reliable signal is whether $DIGEST appears anywhere in CURRENT.
+          if [ -n "$DIGEST" ] && echo "$CURRENT" | grep -q -- "$DIGEST"; then
+            echo "ACA already at $DIGEST — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ACA needs update."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update Container App image
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [ -n "${{ steps.hub.outputs.digest }}" ]; then
+            NEW_IMAGE="${IMAGE_REPOSITORY}@${{ steps.hub.outputs.digest }}"
+          else
+            NEW_IMAGE='${{ steps.target.outputs.ref }}'
+          fi
           echo "Deploying ${NEW_IMAGE} to ${CONTAINER_APP} in ${RESOURCE_GROUP}"
           az containerapp update \
             --name "${CONTAINER_APP}" \
@@ -75,7 +145,8 @@ jobs:
             --image "${NEW_IMAGE}" \
             --output table
 
-      - name: Wait for revision healthy
+      - name: Wait for revision Healthy
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           REVISION=$(az containerapp show \
@@ -105,6 +176,7 @@ jobs:
           exit 1
 
       - name: Smoke test /healthz
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           FQDN=$(az containerapp show \
@@ -114,3 +186,13 @@ jobs:
           echo "FQDN: ${FQDN}"
           curl -fsS "https://${FQDN}/healthz"
           echo "✅ Smoke test passed"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Reconcile summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tracked: \`${IMAGE_REPOSITORY}:${TRACKED_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker Hub digest: \`${{ steps.hub.outputs.digest || 'n/a (override)' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ACA was running: \`${{ steps.aca.outputs.current }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Action: ${{ steps.gate.outputs.skip == 'true' && 'no-op' || 'updated' }}" >> "$GITHUB_STEP_SUMMARY"
+

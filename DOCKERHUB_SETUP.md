@@ -61,76 +61,36 @@ appeid-latest     <- hooks/post_push
 appeid-1.26.2-<sha>
 ```
 
-## 3. Webhook: Docker Hub → GitHub Actions
+## 3. ACA pull cadence — no webhook needed
 
-So a successful Docker Hub build automatically triggers `deploy-aca.yml`.
+GitHub Actions polls Docker Hub once an hour (`.github/workflows/deploy-aca.yml`, cron `7 * * * *`) and rolls the ACA Container App **only if** the `appeid-latest` digest on Docker Hub differs from what's currently running. No webhook, no PAT in a URL, no Cloudflare Worker.
 
-1. Create a **fine-grained PAT** in GitHub:
-   - Settings → Developer settings → Personal access tokens → Fine-grained tokens → **Generate new token**.
-   - Resource owner: `ArmyGuy255A`
-   - Repository access: `Only select repositories` → `ArmyGuy255A/nginx`
-   - Permissions: **Actions: Read and write**, **Contents: Read-only**.
-   - Copy the token (starts with `github_pat_...`).
+The poll uses Docker Hub's public JSON API (`/v2/repositories/<repo>/tags/<tag>`) which doesn't require auth for public images, so there's nothing to configure on the Docker Hub side.
 
-2. Docker Hub → `armyguy255a/nginx` → **Webhooks** → **New webhook**.
+To force a roll between polls:
 
-   - Webhook name: `gh-deploy-aca`
-   - Webhook URL: `https://api.github.com/repos/ArmyGuy255A/nginx/dispatches`
+```sh
+# pin a specific tag
+gh workflow run deploy-aca.yml -f image_ref=armyguy255a/nginx:appeid-1.26.2.5
 
-3. Docker Hub doesn't let you set arbitrary headers on the basic webhook. **Two workarounds**:
-
-   - **Option A (recommended)** — Use a small intermediary like Cloudflare Workers / Vercel function / Azure Function that listens on a public URL, validates the DH payload, then calls GH dispatches with the PAT in the Authorization header. The Worker code is 15 lines; sample below.
-   - **Option B** — Use `https://X:<TOKEN>@api.github.com/repos/...` URL-embedded basic auth. GitHub's dispatches endpoint accepts this, but the token appears in logs. **Not recommended for long-lived use.**
-
-### Cloudflare Worker (Option A) sample
-
-```javascript
-// Worker URL becomes the Docker Hub webhook target.
-// Set DH_SHARED_SECRET (Docker Hub doesn't sign payloads, so we use a
-// shared secret in the URL: ?s=<value>) and GH_PAT as Worker secrets.
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.searchParams.get('s') !== env.DH_SHARED_SECRET) {
-      return new Response('forbidden', { status: 403 });
-    }
-    const payload = await request.json();
-    // Docker Hub push_data.tag is e.g. "appeid-1.26.2.5"
-    const tag = payload?.push_data?.tag ?? 'latest';
-
-    const resp = await fetch(
-      'https://api.github.com/repos/ArmyGuy255A/nginx/dispatches',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `token ${env.GH_PAT}`,
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'docker-hub-dispatcher',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          event_type: 'docker-hub-push',
-          client_payload: { tag },
-        }),
-      }
-    );
-    return new Response(`gh status ${resp.status}`, { status: resp.status });
-  },
-};
+# or just nudge it to re-check appeid-latest now
+gh workflow run deploy-aca.yml -f force=true
 ```
 
-Webhook URL in Docker Hub: `https://<worker-name>.<your-handle>.workers.dev/?s=<DH_SHARED_SECRET>`.
+To change the cadence, edit the `cron:` value in `deploy-aca.yml`:
 
-Filter the webhook so it only fires for `appeid-*` tags (Docker Hub webhooks don't filter, so the Worker can early-return if tag doesn't start with `appeid-`).
+| Use case | Cron |
+|---|---|
+| Hourly (default) | `7 * * * *` |
+| Every 6 hours | `7 */6 * * *` |
+| Daily 04:07 UTC | `7 4 * * *` |
 
 ### Verify the end-to-end loop
 
-After Webhook setup:
-
 1. Push a tag from GitHub: `git tag v1.26.2.999 main && git push origin v1.26.2.999`
 2. Watch Docker Hub Builds tab — both Rules should fire and complete green.
-3. Watch the dispatched GitHub Actions run on the `nginx` repo — `deploy-aca.yml` runs.
-4. ACA should show a new revision with the bumped image tag, `Healthy` within ~30s.
+3. Within the next hour (or sooner if you `workflow_dispatch`), `deploy-aca.yml` picks up the new digest and rolls ACA.
+4. ACA's new revision reaches `Healthy` within ~30s; the workflow runs a `/healthz` smoke test.
 5. `curl -I https://appeid.app/healthz` → 200.
 
 ## 4. (Optional) Repository description sync
@@ -160,11 +120,11 @@ Docker Hub supports syncing the `README.md` from the linked GitHub repo as the r
                 │ Docker Hub Builds (Rules 1 + 2)      │
                 │ alpine-<v>, appeid-<v>, :latest, ... │
                 └──────────────────┬───────────────────┘
-                                   │ webhook → CF Worker → GH dispatches
+                                   │ (no webhook)
                                    ▼
                 ┌──────────────────────────────────────┐
-                │ deploy-aca.yml                       │
-                │ az containerapp update --image       │
+                │ deploy-aca.yml (cron 7 * * * *)      │
+                │ digest-compare → update if changed   │
                 └──────────────────────────────────────┘
 
   Weekly security-rebuild.yml fires cut-release.yml directly with no code
