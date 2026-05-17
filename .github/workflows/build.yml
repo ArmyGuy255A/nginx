@@ -2,27 +2,26 @@ name: build-push
 
 # Replaces Docker Hub Automated Builds (deprecated by Docker; full retire
 # 2027-04-01). See https://docs.docker.com/docker-hub/repos/manage/builds/migrate/
+# Pattern mirrors Docker's reference workflow at
+# https://github.com/docker/autobuilds-actions
 #
 # Triggers:
-#   * push to `main`           → publishes armyguy255a/nginx:alpine-latest
-#   * push tag matching v*     → publishes armyguy255a/nginx:alpine-<ver>
-#                                (e.g. tag `v1.30.1` → tag `alpine-1.30.1`)
-#   * workflow_dispatch        → manual one-shot (uses the current ref's
-#                                derived tags via the standard metadata
-#                                action — same logic as push triggers)
-#
-# Both triggers fire from commits that check-versions.yml lands on main
-# (a) on plain bumps → :alpine-latest, and (b) on nginx-version bumps
-# where check-versions.yml ALSO pushes `v<ver>` → :alpine-<ver>.
+#   * pull_request to main     → build (load locally), DON'T push.
+#                                Catches Dockerfile regressions in PRs.
+#   * push to `main`           → build + publish armyguy255a/nginx:alpine-latest
+#   * push tag matching v*     → build + publish armyguy255a/nginx:alpine-<ver>
+#   * workflow_dispatch        → manual one-shot
 #
 # Required secrets (one-time GH repo setup):
 #   DOCKERHUB_USERNAME   armyguy255a
-#   DOCKERHUB_TOKEN      Personal Access Token (Read & Write) created at
+#   DOCKERHUB_TOKEN      Personal Access Token (Read & Write) from
 #                        hub.docker.com → Account Settings → Personal
 #                        Access Tokens. Store in repo Settings → Secrets
 #                        and variables → Actions.
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
     tags: ['v*']
@@ -34,27 +33,19 @@ permissions:
 env:
   IMAGE: armyguy255a/nginx
 
-# Allow tag + branch builds to run in parallel (separate ref groups), but
-# cancel any in-flight build for the SAME ref if a newer commit comes in.
 concurrency:
   group: build-push-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: build + push (alpine)
+    name: build (push on main + tags)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Derive image tags + labels from ref
         id: meta
@@ -68,17 +59,28 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build + push
+      # Log in to Docker Hub only when we're actually going to push (push
+      # to main or tag). PR runs skip login so a forked-PR contributor
+      # can't trigger pushes from a malicious build context.
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Always build. Pushes only on push events (main or tags) — PRs
+      # exercise the Dockerfile end-to-end as a regression check without
+      # leaking pre-merge images to Docker Hub.
+      - name: Build (and push on main/tag)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.alpine
-          push: true
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GH Actions cache layer — drops build time from ~5min to ~1min
-          # on no-source-change rebuilds (e.g. when only versions.json
-          # was bumped but the apk apt index didn't actually move).
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -88,8 +90,15 @@ jobs:
           {
             echo "## Build summary"
             echo "- **Ref:** \`${{ github.ref }}\`"
-            echo "- **Tags pushed:**"
+            echo "- **Event:** \`${{ github.event_name }}\`"
+            echo "- **Tags:**"
             echo '  ```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '  ```'
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "- **Push:** skipped (PR build — verification only)"
+            else
+              echo "- **Push:** ✅ to Docker Hub"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
