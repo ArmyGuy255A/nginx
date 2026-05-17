@@ -43,13 +43,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # --- nginx (latest stable from nginx.org) ---
-          HTML="$(curl -fsSL https://nginx.org/en/download.html)"
-          STABLE_BLOCK="$(echo "$HTML" | sed -n '/Stable version/,/Mainline version/p')"
-          NGINX_LATEST="$(echo "$STABLE_BLOCK" | \
-            grep -oE 'nginx-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | \
-            sed -E 's/^nginx-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' | \
-            sort -V | tail -n 1)"
+          # --- nginx (latest STABLE from nginx/nginx GitHub releases) ---
+          # nginx convention: even-numbered minor = stable, odd = mainline.
+          # The /releases endpoint sorts by published_at, which interleaves
+          # stable + mainline. We filter on even-minor here so we never
+          # accidentally adopt a mainline release. To opt into mainline:
+          # change `$2 % 2 == 0` to `$2 % 2 == 1` (or drop the awk filter).
+          #
+          # `/releases/latest` would be wrong — it just returns whichever
+          # non-prerelease was published most recently, regardless of
+          # stable/mainline (nginx doesn't mark mainline as prerelease).
+          NGINX_LATEST="$(curl -fsSL 'https://api.github.com/repos/nginx/nginx/releases?per_page=30' \
+            | jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            | sed -E 's/^release-//' \
+            | awk -F. '$2 % 2 == 0 { print }' \
+            | sort -V | tail -n 1)"
 
           # --- alpine major.minor candidates (newest first) ---
           PINNED_ALPINE="$(jq -r .alpine versions.json)"
