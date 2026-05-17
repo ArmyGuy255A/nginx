@@ -1,0 +1,32 @@
+name: security-rebuild
+
+# Forces a release tag once a week even when there are no code changes.
+# Docker Hub rebuilds the image on the new tag, which pulls the current
+# Alpine package index and so picks up any upstream security patches
+# (apk packages, base-image CVEs) since the previous build.
+#
+# Tag scheme matches cut-release.yml: v<NGINX_VERSION>.<NEXT_BUILDVER>.
+# The workflow calls cut-release via workflow_dispatch so they share the
+# bump-commit / tag / release logic — keeps the bookkeeping in one place.
+
+on:
+  schedule:
+    # 09:00 UTC every Monday (~04:00 ET) — after weekend Alpine pushes.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: write   # to fire cut-release via workflow_dispatch
+
+jobs:
+  trigger:
+    name: Trigger cut-release for a no-op security rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fire cut-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run cut-release.yml \
+            --ref main \
+            --field reason="weekly Alpine-patch rebuild"

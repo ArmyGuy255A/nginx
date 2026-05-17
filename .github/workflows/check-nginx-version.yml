@@ -1,0 +1,128 @@
+name: check-nginx-version
+
+# Polls nginx.org daily for the latest stable release. If newer than what
+# nginx_version.txt currently pins, opens a PR that:
+#   1. Updates nginx_version.txt to the new version
+#   2. Resets buildver.txt to 0 (next cut-release tag becomes v<NEW>.0)
+#   3. Tags the PR with `auto-bump` for easy filtering
+#
+# The PR ALSO triggers .github/workflows/validate.yml on push so the
+# nginx -t check runs against the bumped configs before merge.
+#
+# Maintainer reviews + merges; the cut-release workflow then produces
+# v<NEW>.0, Docker Hub rebuilds, deploy-aca.yml rolls ACA. Total touch
+# time from upstream release to live: typically < 15 min after merge.
+
+on:
+  schedule:
+    # 07:00 UTC daily (03:00 ET) — quiet hours for the ops timezone.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write       # create branch + push
+  pull-requests: write  # open PR
+
+concurrency:
+  group: check-nginx-version
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Compare upstream vs pinned
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch latest stable from nginx.org
+        id: upstream
+        run: |
+          set -euo pipefail
+          # nginx publishes stable + mainline. We track the latest stable
+          # (even-numbered minor, e.g. 1.26.x, 1.28.x). The /en/download.html
+          # page lists "Stable version" first; we parse the latest-version
+          # download link, which is a stable HTML structure.
+          HTML="$(curl -fsSL https://nginx.org/en/download.html)"
+          # Match `nginx-1.26.2.tar.gz` style links and pick the highest in
+          # the "Stable version" section (which appears before "Mainline").
+          STABLE_BLOCK="$(echo "$HTML" | sed -n '/Stable version/,/Mainline version/p')"
+          LATEST="$(echo "$STABLE_BLOCK" | \
+            grep -oE 'nginx-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | \
+            sed -E 's/^nginx-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' | \
+            sort -V | tail -n 1)"
+          if [ -z "$LATEST" ]; then
+            echo "::error::Could not parse latest stable version from nginx.org" >&2
+            exit 1
+          fi
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Upstream stable: ${LATEST}"
+
+      - name: Compare against pinned
+        id: cmp
+        run: |
+          set -euo pipefail
+          PINNED="$(cat nginx_version.txt | tr -d '[:space:]')"
+          LATEST="${{ steps.upstream.outputs.latest }}"
+          echo "pinned=${PINNED}"   >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}"   >> "$GITHUB_OUTPUT"
+          if [ "${PINNED}" = "${LATEST}" ]; then
+            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
+            echo "Already at ${PINNED}; no action needed."
+            exit 0
+          fi
+          # Reject downgrades: sort -V both, ensure LATEST sorts higher.
+          HIGHER="$(printf '%s\n%s\n' "$PINNED" "$LATEST" | sort -V | tail -n 1)"
+          if [ "${HIGHER}" != "${LATEST}" ]; then
+            echo "::warning::Upstream parse '${LATEST}' is older than pinned '${PINNED}'; ignoring."
+            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "needs_bump=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open / update PR
+        if: steps.cmp.outputs.needs_bump == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED:   ${{ steps.cmp.outputs.pinned }}
+          LATEST:   ${{ steps.cmp.outputs.latest }}
+        run: |
+          set -euo pipefail
+          BRANCH="auto/bump-nginx-${LATEST}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # If a stale branch from a previous attempt at the same version
+          # already exists, reuse it (force-update from current main).
+          git fetch origin "${BRANCH}" 2>/dev/null && \
+            git checkout "${BRANCH}" && git reset --hard origin/main || \
+            git checkout -b "${BRANCH}"
+
+          echo "${LATEST}" > nginx_version.txt
+          echo "0"        > buildver.txt
+          git add nginx_version.txt buildver.txt
+
+          # Sanity: nothing to commit (race against a manual bump)?
+          if git diff --cached --quiet; then
+            echo "No diff after bump; manual bump likely landed already."
+            exit 0
+          fi
+
+          git commit -m "chore(deps): bump nginx ${PINNED} -> ${LATEST}"
+          git push --force-with-lease --set-upstream origin "${BRANCH}"
+
+          # gh pr create is idempotent: returns existing PR URL on re-run.
+          PR_URL="$(gh pr list --head "${BRANCH}" --json url --jq '.[0].url' || true)"
+          if [ -z "${PR_URL}" ]; then
+            PR_URL="$(gh pr create \
+              --base main \
+              --head "${BRANCH}" \
+              --title "chore(deps): bump nginx ${PINNED} → ${LATEST}" \
+              --label auto-bump \
+              --body  "Upstream nginx.org now lists **${LATEST}** as the current stable release (we were on ${PINNED}). This PR resets \`buildver.txt\` to 0 so the next cut-release tag becomes \`v${LATEST}.0\`. The validate workflow will re-run \`nginx -t\` against the bumped configs. Merge to roll out.")"
+          fi
+          echo "PR: ${PR_URL}"
