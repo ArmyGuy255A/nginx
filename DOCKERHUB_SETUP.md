@@ -46,40 +46,36 @@ Repo → **Settings** → **Description** → **Sync with source repository**.
 
 ## How it flows
 
-```
-       ┌──────────────────────────────────────┐
-       │ check-versions.yml (daily 06:00 UTC) │
-       │ probes nginx.org / DH alpine tags    │
-       └──────────────────┬───────────────────┘
-                          │ if any version drifts
-                          ▼
-                rewrites versions.json + Dockerfile.alpine
-                commits "chore(deps): …" + pushes to main
-                          │
-                          │  branch-push trigger
-                          ▼
-                  Rule 1 → :alpine-latest
-                          │
-                          │ if nginx version specifically changed
-                          ▼
-                also pushes tag v<new-nginx>
-                          │  tag-push trigger
-                          ▼
-                  Rule 2 → :alpine-<new>
+```mermaid
+flowchart TD
+    CV[check-versions.yml<br/>daily 06:00 UTC<br/>probes nginx.org + DH alpine tags]
+    CV --> D{Any version<br/>drifts?}
+    D -->|no| Done[done]
+    D -->|yes| TB[Test-build gate:<br/>docker build + nginx -V]
+    TB -->|fail| Skip[abort — main untouched<br/>retry tomorrow]
+    TB -->|ok| C[Rewrite versions.json<br/>+ Dockerfile.alpine<br/>commit + push main]
+    C --> R1[Rule 1 → :alpine-latest]
+    C --> Q{nginx version<br/>specifically changed?}
+    Q -->|no| Stop[stop]
+    Q -->|yes| Tag[push tag v&lt;new-nginx&gt;]
+    Tag --> R2[Rule 2 → :alpine-&lt;new&gt;]
 ```
 
-Alpine patch-level bumps (3.22.4 → 3.22.5) surface through `:alpine-latest` only. Versioned tags are immutable snapshots.
+`:alpine-latest` rolls forward continuously (every Alpine/openssl/zlib/nginx-patch bump). Versioned tags are **immutable snapshots** — consumers wanting auto-updates pin `:alpine-latest`, consumers wanting reproducibility pin a specific version like `:alpine-1.30.1`.
 
-## Major.minor Alpine bumps
+## Major-version transitions (Alpine 4, nginx 2)
 
-The workflow stays within whichever `major.minor` is currently pinned (e.g. 3.22.x). To migrate to a new minor:
+Fully automated. Three safety gates protect against breakage:
 
-```diff
-- "alpine": "3.22.4",
-+ "alpine": "3.23.0",
-```
+1. **otel-apk presence**: the workflow only adopts an Alpine major.minor if `nginx-module-otel-*.apk` has been published for it at `nginx.org/packages/alpine/v<mm>/main/x86_64/`. Falls back through older minors until one has the apk.
+2. **DH tag existence**: only Alpine versions that actually exist as DH tags are eligible.
+3. **Test-build gate**: after sed-ing the proposed versions in, the workflow runs a real `docker build -f Dockerfile.alpine .` + `docker run --rm ... nginx -V`. If either fails (apk rename in Alpine 4, configure-flag drift in nginx 2, headers-more incompatibility, etc.), the workflow exits **before** the commit step. main stays on the last-known-good; tomorrow's run retries.
 
-Commit + push. Workflow's next run then tracks 3.23.x patches. Guard prevents auto-bumper from grabbing a too-new Alpine where `nginx-module-otel` hasn't been published yet.
+So Alpine 3 → 4 and nginx 1 → 2 are both hands-off transitions — the workflow either ships them cleanly or sits on the previous version while warning red in the Actions tab.
+
+## Bare-minor fallback
+
+If a new Alpine minor (e.g. `3.23`) is published but no `3.23.0` patch tag exists yet, the workflow pins the bare `3.23` tag. The next day's run picks up `3.23.1` as soon as it appears.
 
 ## Verifying after setup
 
