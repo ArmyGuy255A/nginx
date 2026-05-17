@@ -56,12 +56,15 @@ jobs:
           PINNED_MM="${PINNED_ALPINE%.*}"
 
           ALPINE_TAGS_JSON="$(curl -fsSL 'https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200')"
-          # All 3.x minor versions on DH, sorted highest-first.
+          # All major.minor tags on DH (any major: 3.x, 4.x, etc.), sorted
+          # highest-first. The otel-apk probe + test-build gates below
+          # protect against a major bump where package names or build
+          # tooling have shifted incompatibly.
           ALL_MM=$(echo "$ALPINE_TAGS_JSON" \
             | jq -r '.results[].name' \
-            | grep -E '^3\.[0-9]+$' \
+            | grep -E '^[0-9]+\.[0-9]+$' \
             | sort -Vr | uniq)
-          echo "Available Alpine minors: $(echo "$ALL_MM" | tr '\n' ' ')"
+          echo "Available Alpine major.minors: $(echo "$ALL_MM" | tr '\n' ' ')"
 
           # --- resolve a SAFE major.minor: highest mm where the nginx
           #     otel apk exists on nginx.org ---
@@ -148,6 +151,32 @@ jobs:
             -e "s|^ENV NGINX_VERSION=.*|ENV NGINX_VERSION=${NGINX}|" \
             -e "s|/alpine/v[0-9.]\+/main/|/alpine/v${ALPINE_MM}/main/|g" \
             Dockerfile.alpine
+
+      - name: Verify proposed Dockerfile actually builds
+        # Critical safety gate. The otel-apk probe protects against
+        # missing nginx-module packages, but it can't catch:
+        #   * Alpine major bumps where `apk add` package names change
+        #     (e.g. openssl-dev -> openssl3-dev) or musl ABI shifts
+        #   * nginx source tarball moves / configure-flag changes
+        #   * Mismatched module versions vs nginx
+        # Running a real `docker build` is the only way to know the
+        # bump is mergeable. If it fails, abort the commit — main
+        # stays on the last-known-good versions, and tomorrow's cron
+        # will probe again. The image deployed to ACA is unaffected
+        # because :alpine-latest doesn't move until a successful build
+        # lands on Docker Hub.
+        if: steps.diff.outputs.changed == '1'
+        run: |
+          set -euo pipefail
+          echo "::group::Verifying docker build against proposed versions"
+          docker build -f Dockerfile.alpine -t check-versions:verify .
+          echo "::endgroup::"
+
+          echo "::group::Smoke test: nginx -V on built image"
+          docker run --rm check-versions:verify nginx -V 2>&1 | head -n 20
+          echo "::endgroup::"
+
+          echo "✓ Proposed Dockerfile builds and nginx starts cleanly."
 
       - name: Commit + push + maybe tag
         if: steps.diff.outputs.changed == '1'
