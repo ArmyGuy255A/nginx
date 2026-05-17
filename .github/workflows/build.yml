@@ -71,7 +71,11 @@ jobs:
 
       # Always build. Pushes only on push events (main or tags) — PRs
       # exercise the Dockerfile end-to-end as a regression check without
-      # leaking pre-merge images to Docker Hub.
+      # leaking pre-merge images to Docker Hub. Provenance + SBOM are
+      # attached on every pushed image (Docker Scout policy: Supply
+      # chain attestations) — these are SLSA build provenance and a
+      # software bill of materials in SPDX format, attached to the
+      # image as OCI referrers.
       - name: Build (and push on main/tag)
         uses: docker/build-push-action@v5
         with:
@@ -81,6 +85,8 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
