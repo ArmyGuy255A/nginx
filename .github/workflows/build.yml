@@ -9,6 +9,8 @@ name: build-push
 #   * pull_request to main     → build (load locally), DON'T push.
 #                                Catches Dockerfile regressions in PRs.
 #   * push to `main`           → build + publish armyguy255a/nginx:alpine-latest
+#                                AND armyguy255a/nginx:alpine-<nginx ver>
+#                                (nginx version read from versions.json)
 #   * push tag matching v*     → build + publish armyguy255a/nginx:alpine-<ver>
 #   * workflow_dispatch        → manual one-shot
 #
@@ -47,6 +49,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Read the pinned nginx version from versions.json so main-branch
+      # pushes publish BOTH :alpine-latest AND the immutable
+      # :alpine-<nginx version> tag in one shot. Without this, the
+      # versioned tag would only get cut when check-versions.yml pushed
+      # a v<nginx> git tag, leaving the in-between main pushes (manual
+      # edits, Dockerfile tweaks, etc.) un-versioned on Docker Hub.
+      - name: Read nginx version from versions.json
+        id: nginx
+        run: |
+          set -euo pipefail
+          NGINX_VERSION="$(jq -r .nginx versions.json)"
+          echo "version=${NGINX_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Derive image tags + labels from ref
         id: meta
         uses: docker/metadata-action@v5
@@ -54,6 +69,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=alpine-latest,enable={{is_default_branch}}
+            type=raw,value=alpine-${{ steps.nginx.outputs.version }},enable={{is_default_branch}}
             type=match,pattern=v(.+),group=1,prefix=alpine-
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
