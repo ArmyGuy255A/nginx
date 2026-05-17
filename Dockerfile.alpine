@@ -7,6 +7,16 @@ ENV MORE_SET_HEADER_VERSION=0.34
 ENV FANCYINDEX=0.5.2
 ENV MODULE_URL_BASE=https://nginx.org/packages/alpine/v3.23/main/x86_64/
 
+# Refresh apk index + upgrade every preinstalled package to the latest
+# patches available in alpine v3.23/main. This shifts the effective base
+# from "alpine 3.23.4 as of when that tag was built" to "alpine v3.23
+# latest patches as of THIS build", so security fixes Alpine releases
+# between version-tag cuts (e.g. patched curl, libxml2, busybox,
+# freetype) get baked in on every check-versions run / build-push run.
+RUN apk update && \
+    apk upgrade --no-cache && \
+    rm -rf /var/cache/apk/*
+
 
 RUN mkdir -p /var/www/html \
     && GPG_KEYS=D6786CE303D9A9022998DC6CC8464D549AF75C0A \
@@ -141,10 +151,9 @@ RUN mkdir -p /var/www/html \
             | xargs -r apk info --installed \
             | sort -u \
     )" \
-    && apk add --no-cache --virtual .nginx-rundeps $runDeps apache2-utils \
+    && apk add --no-cache --virtual .nginx-rundeps $runDeps \
     c-ares \
     libstdc++ \
-    curl \
     && apk del --no-cache .build-deps \
     && apk del --no-cache .gettext \
     && mv /tmp/envsubst /usr/local/bin/ \
@@ -179,8 +188,24 @@ RUN wget -qO- $MODULE_URL_BASE | \
 RUN install -m755 /var/www/html/usr/lib/nginx/modules/ngx_otel_module.so /etc/nginx/modules/ngx_otel_module.so && \
     rm nginx-module-otel-*.apk
 
-EXPOSE 80 443
+# Non-root hardening — required for Docker Scout's "default non-root user"
+# policy and for running under k8s securityContext.runAsNonRoot=true.
+#
+# nginx user already exists (created in the build RUN block via
+# `addgroup -S nginx && adduser -D -S ... nginx`). What we need at the
+# end is to make sure every directory nginx writes to at runtime is
+# nginx-owned, and that the pid path is somewhere nginx can write.
+#
+# Downstream images (e.g. armyguy255a/nginx-appeid) that `COPY` an
+# nginx.conf MUST set `pid /tmp/nginx.pid;` (or other nginx-writable
+# path), and listen only on ports >= 1024 — the default :8080 is fine.
+RUN chown -R nginx:nginx /etc/nginx /var/cache/nginx /var/log/nginx /var/www \
+    && mkdir -p /tmp/nginx \
+    && chown -R nginx:nginx /tmp/nginx
+
+USER nginx
+
+EXPOSE 8080
 STOPSIGNAL SIGQUIT
 
-# ENTRYPOINT [ "/bin/sh" ]
 CMD ["nginx", "-g", "daemon off;"]

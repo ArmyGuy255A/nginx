@@ -71,7 +71,12 @@ jobs:
 
       # Always build. Pushes only on push events (main or tags) — PRs
       # exercise the Dockerfile end-to-end as a regression check without
-      # leaking pre-merge images to Docker Hub.
+      # leaking pre-merge images to Docker Hub. Provenance + SBOM are
+      # attached on every PUSHED image (Docker Scout policy: Supply
+      # chain attestations) but DISABLED on PR builds — the local docker
+      # daemon's load exporter doesn't support the manifest-list output
+      # that provenance/sbom produces, so PR builds would fail with
+      # "docker exporter does not currently support exporting manifest lists".
       - name: Build (and push on main/tag)
         uses: docker/build-push-action@v5
         with:
@@ -81,6 +86,8 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: ${{ github.event_name == 'pull_request' && 'false' || 'mode=max' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
