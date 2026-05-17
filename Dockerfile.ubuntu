@@ -2,10 +2,12 @@
 FROM ubuntu:24.04
 
 
-# Set ARGs for versions
-ARG version=1.16.1
-ARG opensslversion=3.2.1
-ARG zlibversion=1.3.1
+# Set ARGs for versions — kept in lockstep with versions.json by
+# .github/workflows/check-versions.yml. NGINX_VERSION is named identically
+# to Dockerfile.alpine's ENV so the bumper's sed pattern is the same.
+ARG NGINX_VERSION=1.30.1
+ARG opensslversion=3.6.2
+ARG zlibversion=1.3.2
 
 # Install required packages and build dependencies
 RUN apt-get update && \
@@ -25,8 +27,8 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and extract Nginx, OpenSSL, zlib, and the Nginx modules
-RUN wget https://nginx.org/download/nginx-${version}.tar.gz && \
-    tar -xf nginx-${version}.tar.gz && \
+RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    tar -xf nginx-${NGINX_VERSION}.tar.gz && \
     wget https://github.com/yaoweibin/ngx_http_substitutions_filter_module/archive/master.zip -O subs.zip && \
     unzip subs.zip && \
     wget https://github.com/openresty/headers-more-nginx-module/archive/master.zip -O headers.zip && \
@@ -37,7 +39,7 @@ RUN wget https://nginx.org/download/nginx-${version}.tar.gz && \
     tar -xf zlib-${zlibversion}.tar.gz
 
 # Set the working directory to the Nginx source
-WORKDIR /nginx-${version}
+WORKDIR /nginx-${NGINX_VERSION}
 
 # Configure Nginx with desired modules and settings
 RUN ./configure \
@@ -72,13 +74,9 @@ RUN make && make install
 # Create necessary directories and add placeholders for runtime use
 RUN mkdir -p /var/www /usr/share/.empty /var/run/.empty /var/lock/.empty
 
-# Copy configuration files, certificates, and custom templates
-COPY etc /etc
+# Copy baseline nginx config (overridden by derived images / volume mounts).
 COPY www /var/www
 COPY ConfigTemplate /etc/nginx
-COPY ConfigCustom /etc/nginx
-COPY Certs/CA /etc/ssl/certs
-COPY Certs/Server /etc/ssl/certs
 
 # Ensure /etc/passwd and /etc/group contain entries for root
 RUN echo "www-data:x:0:0:root:/www-data:/bin/bash" > /etc/passwd && \

@@ -1,0 +1,56 @@
+name: validate
+
+on:
+  pull_request:
+    branches: ['**']
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  versions-json:
+    name: versions.json schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse versions.json + sanity-check required keys
+        run: |
+          set -euo pipefail
+          jq -e '.nginx and .alpine and .ubuntu and .openssl and .zlib' versions.json >/dev/null
+          jq -e '.nginx   | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' versions.json >/dev/null
+          jq -e '.alpine  | test("^[0-9]+\\.[0-9]+$")'          versions.json >/dev/null
+          jq -e '.ubuntu  | test("^[0-9]+\\.[0-9]+$")'          versions.json >/dev/null
+          jq -e '.openssl | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' versions.json >/dev/null
+          jq -e '.zlib    | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' versions.json >/dev/null
+          echo "✓ versions.json well-formed"
+
+  dockerfile-versions-match:
+    name: Dockerfiles match versions.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert Dockerfile.alpine matches
+        run: |
+          set -euo pipefail
+          PINNED=$(jq -r .nginx versions.json)
+          DOCKER=$(grep -oE '^ENV NGINX_VERSION=[0-9.]+' Dockerfile.alpine | cut -d= -f2)
+          [ "$PINNED" = "$DOCKER" ] || { echo "alpine NGINX_VERSION drift: versions.json=$PINNED, Dockerfile=$DOCKER" >&2; exit 1; }
+          PINNED=$(jq -r .alpine versions.json)
+          DOCKER=$(grep -oE '^FROM alpine:[0-9.]+' Dockerfile.alpine | cut -d: -f2)
+          [ "$PINNED" = "$DOCKER" ] || { echo "alpine FROM drift: versions.json=$PINNED, Dockerfile=$DOCKER" >&2; exit 1; }
+          echo "✓ Dockerfile.alpine in sync"
+      - name: Assert Dockerfile.ubuntu matches
+        run: |
+          set -euo pipefail
+          for spec in "nginx:NGINX_VERSION" "openssl:opensslversion" "zlib:zlibversion"; do
+            KEY="${spec%%:*}"; ARG="${spec##*:}"
+            PINNED=$(jq -r ".${KEY}" versions.json)
+            DOCKER=$(grep -oE "^ARG ${ARG}=[0-9.]+" Dockerfile.ubuntu | cut -d= -f2)
+            [ "$PINNED" = "$DOCKER" ] || { echo "ubuntu ${ARG} drift: versions.json=$PINNED, Dockerfile=$DOCKER" >&2; exit 1; }
+          done
+          PINNED=$(jq -r .ubuntu versions.json)
+          DOCKER=$(grep -oE '^FROM ubuntu:[0-9.]+' Dockerfile.ubuntu | cut -d: -f2)
+          [ "$PINNED" = "$DOCKER" ] || { echo "ubuntu FROM drift: versions.json=$PINNED, Dockerfile=$DOCKER" >&2; exit 1; }
+          echo "✓ Dockerfile.ubuntu in sync"
