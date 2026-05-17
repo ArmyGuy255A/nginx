@@ -1,9 +1,91 @@
 #!/bin/sh
+###############################################################################
+# Docker Hub Automated Build entrypoint.
+#
+# This repo ships TWO Docker Hub Build Rules, both targeting the same
+# armyguy255a/nginx repo:
+#
+#   Rule 1 — base nginx image
+#     Source branch:  1.26.2
+#     Dockerfile:     Dockerfile.alpine
+#     Docker tag:     alpine-{sourceref}
+#     IMAGE_NAME:     armyguy255a/nginx:alpine-1.26.2
+#
+#   Rule 2 — appeid edge-proxy variant
+#     Source branch:  1.26.2
+#     Dockerfile:     Dockerfile.appeid
+#     Docker tag:     appeid-{sourceref}
+#     IMAGE_NAME:     armyguy255a/nginx:appeid-1.26.2
+#
+# Docker Hub passes the rule-specific Dockerfile path via $DOCKERFILE_PATH.
+# This hook routes on that to emit useful additional tags via hooks/post_push:
+#
+#   * Base build:   armyguy255a/nginx:latest, armyguy255a/nginx:alpine-1.26.2-<sha>
+#   * Appeid build: armyguy255a/nginx:appeid-latest, armyguy255a/nginx:appeid-1.26.2-<sha>
+#
+# Env vars supplied by Docker Hub (see https://docs.docker.com/docker-hub/builds/advanced/):
+#   IMAGE_NAME       Full target (e.g. armyguy255a/nginx:appeid-1.26.2)
+#   DOCKER_REPO      Repo without tag (e.g. index.docker.io/armyguy255a/nginx)
+#   DOCKERFILE_PATH  Path to the Dockerfile this rule was configured with
+#   SOURCE_BRANCH    Git ref that triggered the build
+#   SOURCE_COMMIT    Git SHA that triggered the build
+###############################################################################
+set -eu
 
-# Read the version from the file, an replace the dots with underscores
-NGINX_VERSION=$(cat nginx_version.txt)
+NGINX_VERSION="$(cat nginx_version.txt)"
+SHORT_SHA="$(echo "${SOURCE_COMMIT:-unknown}" | cut -c1-7)"
+DOCKERFILE="${DOCKERFILE_PATH:-Dockerfile.alpine}"
 
-# Docker Variable Reference: https://docs.docker.com/docker-hub/builds/advanced/
+echo "[hooks/build] DOCKERFILE_PATH=${DOCKERFILE}"
+echo "[hooks/build] NGINX_VERSION=${NGINX_VERSION}"
+echo "[hooks/build] SOURCE_BRANCH=${SOURCE_BRANCH:-?}  SOURCE_COMMIT=${SHORT_SHA}"
+echo "[hooks/build] IMAGE_NAME=${IMAGE_NAME}  DOCKER_REPO=${DOCKER_REPO}"
 
-# Build the Docker image with the build argument
-docker build --build-arg NGINX_VERSION=$NGINX_VERSION -t $IMAGE_NAME -t $DOCKER_REPO:latest .
+# Compute the variant family (base | appeid | ...) from the Dockerfile name
+# so hooks/post_push can emit family-scoped :latest tags without re-parsing.
+VARIANT="$(echo "${DOCKERFILE}" | sed -e 's|.*Dockerfile\.||' -e 's|^alpine$|base|')"
+echo "${VARIANT}" > /tmp/variant
+echo "[hooks/build] VARIANT=${VARIANT}"
+
+COMMON_ARGS=" \
+  --label org.opencontainers.image.source=https://github.com/ArmyGuy255A/nginx \
+  --label org.opencontainers.image.revision=${SOURCE_COMMIT:-} \
+  --label org.opencontainers.image.version=${NGINX_VERSION} \
+  --label org.opencontainers.image.variant=${VARIANT} \
+  --build-arg NGINX_VERSION=${NGINX_VERSION} \
+"
+
+case "${VARIANT}" in
+    base)
+        # Base image — full multi-tag build for the alpine-* family.
+        docker build \
+            -f "${DOCKERFILE}" \
+            ${COMMON_ARGS} \
+            -t "${IMAGE_NAME}" \
+            -t "${DOCKER_REPO}:latest" \
+            -t "${DOCKER_REPO}:alpine-${NGINX_VERSION}-${SHORT_SHA}" \
+            .
+        ;;
+    appeid)
+        # appeid variant — FROM the base image we expect Rule 1 to have
+        # already pushed for this version. The COMMON_ARGS NGINX_VERSION
+        # build-arg is consumed by the optional ARG in Dockerfile.appeid
+        # if/when we parametrize the FROM line further.
+        docker build \
+            -f "${DOCKERFILE}" \
+            ${COMMON_ARGS} \
+            -t "${IMAGE_NAME}" \
+            -t "${DOCKER_REPO}:appeid-latest" \
+            -t "${DOCKER_REPO}:appeid-${NGINX_VERSION}-${SHORT_SHA}" \
+            .
+        ;;
+    *)
+        echo "[hooks/build] WARN: unrecognized variant '${VARIANT}' — building IMAGE_NAME only" >&2
+        docker build \
+            -f "${DOCKERFILE}" \
+            ${COMMON_ARGS} \
+            -t "${IMAGE_NAME}" \
+            .
+        ;;
+esac
+

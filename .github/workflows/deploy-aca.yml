@@ -1,0 +1,116 @@
+name: Deploy edge-nginx to ACA
+
+# Rolls a new container image tag out to the appeid-edge-prod Container App
+# without disturbing the Terraform-managed infra (TF ignores image changes
+# on the container resource via lifecycle.ignore_changes).
+#
+# Triggers:
+#   * workflow_dispatch — manual, with explicit tag (default `latest`)
+#   * repository_dispatch (type: docker-hub-push) — fired by Docker Hub's
+#     webhook on successful Automated Build. Configure in Docker Hub:
+#       Webhooks -> Add -> URL: https://api.github.com/repos/<owner>/<repo>/dispatches
+#       (needs a PAT in Authorization header; or use a GitHub App)
+#
+# Auth: federated OIDC against the AAD service principal whose object ID
+# is stored as the AZURE_CLIENT_ID GitHub Actions variable. The principal
+# must have Contributor on the appeid-edge-prod resource group (granted
+# via the optional `github_actions_principal_id` Terraform variable in
+# terraform/prod).
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (e.g. latest, 1.26.2-<sha>)'
+        required: true
+        default: 'latest'
+  repository_dispatch:
+    types: [docker-hub-push]
+
+permissions:
+  id-token: write   # required for Azure federated OIDC
+  contents: read
+
+env:
+  RESOURCE_GROUP: appeid-edge-prod
+  CONTAINER_APP: edge-nginx
+  IMAGE_REPOSITORY: docker.io/armyguy255a/nginx
+
+jobs:
+  deploy:
+    name: az containerapp update --image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Docker Hub webhook payload puts the tag at .push_data.tag —
+            # the dispatcher needs to forward it as client_payload.tag.
+            TAG="${{ github.event.client_payload.tag }}"
+            if [ -z "$TAG" ]; then TAG="latest"; fi
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved image tag: $(grep ^tag= "$GITHUB_OUTPUT" | cut -d= -f2-)"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Container App image
+        run: |
+          set -euo pipefail
+          NEW_IMAGE="${IMAGE_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+          echo "Deploying ${NEW_IMAGE} to ${CONTAINER_APP} in ${RESOURCE_GROUP}"
+          az containerapp update \
+            --name "${CONTAINER_APP}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --image "${NEW_IMAGE}" \
+            --output table
+
+      - name: Wait for revision healthy
+        run: |
+          set -euo pipefail
+          REVISION=$(az containerapp show \
+            --name "${CONTAINER_APP}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --query 'properties.latestRevisionName' -o tsv)
+          echo "Latest revision: ${REVISION}"
+          for i in $(seq 1 30); do
+            STATE=$(az containerapp revision show \
+              --name "${CONTAINER_APP}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --revision "${REVISION}" \
+              --query 'properties.healthState' -o tsv 2>/dev/null || echo "Unknown")
+            echo "  attempt ${i}: healthState=${STATE}"
+            if [ "${STATE}" = "Healthy" ]; then
+              echo "Revision is Healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Revision did not reach Healthy within 5 minutes." >&2
+          az containerapp revision show \
+            --name "${CONTAINER_APP}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --revision "${REVISION}" \
+            --output yaml
+          exit 1
+
+      - name: Smoke test /healthz
+        run: |
+          set -euo pipefail
+          FQDN=$(az containerapp show \
+            --name "${CONTAINER_APP}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --query 'properties.configuration.ingress.fqdn' -o tsv)
+          echo "FQDN: ${FQDN}"
+          curl -fsS "https://${FQDN}/healthz"
+          echo "✅ Smoke test passed"

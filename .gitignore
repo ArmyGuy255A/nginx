@@ -37,3 +37,12 @@ Services/*
 
 # Include all .placeholder files everywhere
 !.placeholder
+# Terraform
+.terraform/
+.terraform.tfstate
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+backend.*.hcl
+!backend.*.hcl.example

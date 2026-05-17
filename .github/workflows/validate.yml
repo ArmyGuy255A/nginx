@@ -1,0 +1,65 @@
+name: Validate
+
+# Cheap sanity gates that run on every PR. Built-image work happens in
+# Docker Hub Automated Builds — this workflow only verifies the source.
+
+on:
+  pull_request:
+    branches: ['**']
+  push:
+    branches: [main, '1.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck (entrypoint + hooks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck docker-entrypoint.sh hooks/build hooks/post_push
+
+  terraform-fmt-validate:
+    name: terraform fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        working-directory: terraform/prod
+        run: terraform fmt -check -recursive ..
+      - name: terraform init (no backend)
+        working-directory: terraform/prod
+        run: terraform init -backend=false -input=false
+      - name: terraform validate
+        working-directory: terraform/prod
+        run: terraform validate -no-color
+
+  nginx-config-syntax:
+    name: nginx -t against rendered appeid configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render Services/appeid templates and run nginx -t
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/edge
+          export PORT=8080
+          export SWA_UPSTREAM=example.azurestaticapps.net
+          export FOUNDRY_UPSTREAM=foundry.example.com:30000
+          ALLOWLIST='${PORT} ${SWA_UPSTREAM} ${FOUNDRY_UPSTREAM}'
+          envsubst "$ALLOWLIST" \
+            < Services/appeid/nginx.conf       > /tmp/edge/nginx.conf
+          envsubst "$ALLOWLIST" \
+            < Services/appeid/server-appeid.conf > /tmp/edge/server-appeid.conf
+          docker run --rm \
+            -v /tmp/edge/nginx.conf:/etc/nginx/nginx.conf:ro \
+            -v /tmp/edge/server-appeid.conf:/etc/nginx/server-appeid.conf:ro \
+            nginx:1.27-alpine nginx -t

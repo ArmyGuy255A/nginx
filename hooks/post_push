@@ -1,0 +1,33 @@
+#!/bin/sh
+###############################################################################
+# Docker Hub Automated Build post-push hook.
+#
+# hooks/build stamps the per-variant tags on the image; Docker Hub only
+# auto-pushes ${IMAGE_NAME}. We push the rest here.
+#
+# /tmp/variant is written by hooks/build (base | appeid | <other>).
+###############################################################################
+set -eu
+
+NGINX_VERSION="$(cat nginx_version.txt)"
+SHORT_SHA="$(echo "${SOURCE_COMMIT:-unknown}" | cut -c1-7)"
+VARIANT="$(cat /tmp/variant 2>/dev/null || echo unknown)"
+
+echo "[hooks/post_push] VARIANT=${VARIANT}"
+
+case "${VARIANT}" in
+    base)
+        echo "[hooks/post_push] pushing :latest and :alpine-${NGINX_VERSION}-${SHORT_SHA}"
+        docker push "${DOCKER_REPO}:latest"
+        docker push "${DOCKER_REPO}:alpine-${NGINX_VERSION}-${SHORT_SHA}"
+        ;;
+    appeid)
+        echo "[hooks/post_push] pushing :appeid-latest and :appeid-${NGINX_VERSION}-${SHORT_SHA}"
+        docker push "${DOCKER_REPO}:appeid-latest"
+        docker push "${DOCKER_REPO}:appeid-${NGINX_VERSION}-${SHORT_SHA}"
+        ;;
+    *)
+        echo "[hooks/post_push] no extra tags configured for variant '${VARIANT}'"
+        ;;
+esac
+

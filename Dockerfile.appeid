@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+###############################################################################
+# Dockerfile.appeid — appeid.app edge-proxy variant.
+#
+# Built by a SECOND Docker Hub Automated Build Rule (Dockerfile path:
+# Dockerfile.appeid; tag pattern: appeid-{sourceref} + appeid-latest)
+# pointed at the same armyguy255a/nginx repo. Pulls the base image (built
+# by the first Build Rule from Dockerfile.alpine) and layers the
+# Services/appeid/ config set + ACA-compatible entrypoint on top.
+#
+# What this image does:
+#   * Bakes /etc/nginx/nginx.conf and /etc/nginx/server-appeid.conf with
+#     ${PORT} / ${SWA_UPSTREAM} / ${FOUNDRY_UPSTREAM} placeholders.
+#   * On container start, docker-entrypoint.sh envsubst's those placeholders
+#     in place (allowlist only — nginx-native $vars survive), runs
+#     `nginx -t`, then execs nginx.
+#   * Exposes 8080 (HTTP only — ACA terminates TLS at the platform edge
+#     using a cert pulled from Key Vault; see terraform/prod).
+###############################################################################
+
+ARG NGINX_BASE_IMAGE=armyguy255a/nginx:alpine-1.26.2
+FROM ${NGINX_BASE_IMAGE}
+
+# Bake the appeid service over the ConfigTemplate baseline that the base
+# image laid down. The `nginx.conf` here is a complete top-level config
+# (workers/events/http) — it replaces the baseline rather than including
+# it. `server-appeid.conf` is included from `nginx.conf`.
+COPY Services/appeid/nginx.conf        /etc/nginx/nginx.conf
+COPY Services/appeid/server-appeid.conf /etc/nginx/server-appeid.conf
+
+# Entrypoint that envsubst's the allowlisted placeholders before exec'ing
+# nginx. Keeps the same image bit-for-bit identical across environments —
+# the only thing that changes is the env vars ACA sets on the revision.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Health probe target — matches the readiness/liveness probe paths in
+# terraform/prod/main.tf.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+
+EXPOSE 8080
+STOPSIGNAL SIGQUIT
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]

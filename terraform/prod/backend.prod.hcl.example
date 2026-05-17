@@ -1,0 +1,8 @@
+# Example backend config for `terraform init -backend-config=backend.prod.hcl`.
+# Copy to backend.prod.hcl, fill in the storage account that ./bootstrap/
+# created, and `terraform init -backend-config=backend.prod.hcl`.
+
+resource_group_name  = "appeid-tfstate"
+storage_account_name = "REPLACE_ME"   # globally unique, e.g. tfstateappeidNNNN
+container_name       = "tfstate"
+key                  = "appeid-edge-prod.tfstate"
