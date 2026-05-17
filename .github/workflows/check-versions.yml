@@ -1,19 +1,19 @@
 name: check-versions
 
-# Polls upstream for fresh releases of nginx + alpine (patch-level within
-# the current major.minor). When versions.json drifts behind upstream:
-#   1. Rewrites versions.json with the new values.
-#   2. Edits Dockerfile.alpine inline (FROM alpine:<patch>, ENV NGINX_VERSION,
-#      and the MODULE_URL_BASE Alpine path segment which uses major.minor).
-#   3. Commits to main. Branch-push fires DH Build Rule 1 -> :alpine-latest.
-#   4. If nginx VERSION specifically changed, also pushes tag v<new-nginx>.
-#      That fires DH Build Rule 2 -> :alpine-<new>. Versioned tags are
-#      immutable; security-only patches surface through :alpine-latest only.
-#
-# Alpine MAJOR.MINOR bumps (3.22 -> 3.23) require a human edit to
-# versions.json — the workflow stays within whichever major.minor is
-# currently pinned to avoid breaking on Alpine releases that haven't yet
-# stocked the nginx-module-otel package.
+# Polls upstream for nginx + Alpine. Fully hands-off:
+#   * Probes both the latest stable nginx version and the latest Alpine
+#     major.minor on Docker Hub library/alpine.
+#   * Before adopting a NEW Alpine major.minor, verifies the
+#     nginx-module-otel APK has been published for that version at
+#     https://nginx.org/packages/alpine/v<mm>/main/x86_64/. If the apk
+#     is missing (new Alpine not yet stocked), falls back to whatever
+#     major.minor is currently pinned and only bumps the patch level
+#     there. So the workflow never picks an Alpine that breaks the
+#     image build.
+#   * Within the resolved major.minor, finds the latest .patch tag on DH.
+#   * Rewrites versions.json + Dockerfile.alpine, commits to main.
+#   * If nginx VERSION specifically changed, also pushes tag v<nginx> so
+#     DH Build Rule 2 publishes the immutable :alpine-<ver> tag.
 
 on:
   schedule:
@@ -38,10 +38,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Probe upstream versions
+      - name: Probe upstream versions (otel-apk-aware)
         id: probe
         run: |
           set -euo pipefail
+
+          # --- nginx (latest stable from nginx.org) ---
           HTML="$(curl -fsSL https://nginx.org/en/download.html)"
           STABLE_BLOCK="$(echo "$HTML" | sed -n '/Stable version/,/Mainline version/p')"
           NGINX_LATEST="$(echo "$STABLE_BLOCK" | \
@@ -49,25 +51,64 @@ jobs:
             sed -E 's/^nginx-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' | \
             sort -V | tail -n 1)"
 
+          # --- alpine major.minor candidates (newest first) ---
           PINNED_ALPINE="$(jq -r .alpine versions.json)"
-          ALPINE_MM="${PINNED_ALPINE%.*}"
-          ALPINE_LATEST="$(curl -fsSL "https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200" \
-            | jq -r '.results[].name' \
-            | grep -E "^${ALPINE_MM//./\\.}\\.[0-9]+$" \
-            | sort -V | tail -n 1)"
+          PINNED_MM="${PINNED_ALPINE%.*}"
 
-          for v in NGINX ALPINE; do
-            eval "val=\$${v}_LATEST"
-            if [ -z "$val" ]; then
-              echo "::error::Could not parse latest ${v} version" >&2
-              exit 1
+          ALPINE_TAGS_JSON="$(curl -fsSL 'https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200')"
+          # All 3.x minor versions on DH, sorted highest-first.
+          ALL_MM=$(echo "$ALPINE_TAGS_JSON" \
+            | jq -r '.results[].name' \
+            | grep -E '^3\.[0-9]+$' \
+            | sort -Vr | uniq)
+          echo "Available Alpine minors: $(echo "$ALL_MM" | tr '\n' ' ')"
+
+          # --- resolve a SAFE major.minor: highest mm where the nginx
+          #     otel apk exists on nginx.org ---
+          SAFE_MM=""
+          for mm in $ALL_MM; do
+            URL="https://nginx.org/packages/alpine/v${mm}/main/x86_64/"
+            APK="$(curl -fsSL "$URL" 2>/dev/null \
+              | grep -oE 'nginx-module-otel-[0-9.]+-r[0-9]+\.apk' \
+              | head -n 1 || true)"
+            if [ -n "$APK" ]; then
+              echo "  ✓ $URL has $APK"
+              SAFE_MM="$mm"
+              break
+            else
+              echo "  ✗ $URL — no otel apk yet"
             fi
           done
 
-          echo "nginx=$NGINX_LATEST"   >> "$GITHUB_OUTPUT"
-          echo "alpine=$ALPINE_LATEST" >> "$GITHUB_OUTPUT"
-          echo "alpine_mm=$ALPINE_MM"  >> "$GITHUB_OUTPUT"
-          echo "Upstream: nginx=$NGINX_LATEST alpine=$ALPINE_LATEST (within ${ALPINE_MM}.x)"
+          if [ -z "$SAFE_MM" ]; then
+            echo "::warning::No Alpine minor with the otel apk found; staying on currently pinned ${PINNED_MM}."
+            SAFE_MM="$PINNED_MM"
+          fi
+
+          # --- within SAFE_MM, prefer latest patch (e.g. 3.23.1); fall
+          #     back to bare major.minor tag (e.g. 3.23) if no patches
+          #     have been published yet for that minor. Tomorrow's run
+          #     will pick up the first patch as soon as it's tagged. ---
+          ALPINE_LATEST=$(echo "$ALPINE_TAGS_JSON" \
+            | jq -r '.results[].name' \
+            | grep -E "^${SAFE_MM//./\\.}\\.[0-9]+$" \
+            | sort -V | tail -n 1)
+
+          if [ -z "$ALPINE_LATEST" ]; then
+            # No 3.<minor>.<patch> on DH yet — use the bare 3.<minor> tag.
+            # We already know SAFE_MM exists as a tag because we got it
+            # from the ALL_MM listing above.
+            ALPINE_LATEST="$SAFE_MM"
+            echo "  No patch tags for ${SAFE_MM} yet; pinning bare tag '${SAFE_MM}'"
+          fi
+
+          echo "nginx=$NGINX_LATEST"     >> "$GITHUB_OUTPUT"
+          echo "alpine=$ALPINE_LATEST"   >> "$GITHUB_OUTPUT"
+          echo "alpine_mm=$SAFE_MM"      >> "$GITHUB_OUTPUT"
+
+          echo "Resolved upstream snapshot:"
+          echo "  nginx  = $NGINX_LATEST"
+          echo "  alpine = $ALPINE_LATEST (within ${SAFE_MM}.x; otel apk verified)"
 
       - name: Compare against versions.json
         id: diff
@@ -98,6 +139,10 @@ jobs:
              '.nginx=$nginx | .alpine=$alpine' \
              versions.json > versions.json.tmp
           mv versions.json.tmp versions.json
+
+          # ALPINE_MM is the validated major.minor (the resolved SAFE_MM,
+          # which is what MODULE_URL_BASE needs regardless of whether
+          # ALPINE is "3.23.1" or bare "3.23").
           sed -i \
             -e "s|^FROM alpine:.*|FROM alpine:${ALPINE}|" \
             -e "s|^ENV NGINX_VERSION=.*|ENV NGINX_VERSION=${NGINX}|" \
@@ -116,7 +161,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add versions.json Dockerfile.alpine
           if git diff --cached --quiet; then
-            echo "Nothing to commit despite drift (race?)."
+            echo "Nothing to commit despite drift."
             exit 0
           fi
           git commit -m "chore(deps):${MSG}"

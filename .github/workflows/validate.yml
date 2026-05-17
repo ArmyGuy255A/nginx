@@ -17,9 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           set -euo pipefail
-          jq -e '.nginx and .alpine'                           versions.json >/dev/null
-          jq -e '.nginx  | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' versions.json >/dev/null
-          jq -e '.alpine | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' versions.json >/dev/null
+          jq -e '.nginx and .alpine'                                  versions.json >/dev/null
+          jq -e '.nginx  | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")'        versions.json >/dev/null
+          # alpine may be 3.23.1 (with patch) OR bare 3.23 when a new
+          # minor is published before any patch tags. Both are valid.
+          jq -e '.alpine | test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$")'     versions.json >/dev/null
           echo "✓ versions.json well-formed"
 
   dockerfile-matches:
@@ -37,7 +39,10 @@ jobs:
           DOCKER=$(grep -oE '^FROM alpine:[0-9.]+' Dockerfile.alpine | cut -d: -f2)
           [ "$PINNED" = "$DOCKER" ] || { echo "FROM alpine drift: versions.json=$PINNED, Dockerfile=$DOCKER" >&2; exit 1; }
 
-          PINNED_MM="${PINNED%.*}"
+          # MODULE_URL_BASE always uses major.minor regardless of whether
+          # the FROM tag has a patch suffix. awk -F. always yields $1.$2
+          # which works for both "3.23.1" and bare "3.23".
+          PINNED_MM=$(echo "$PINNED" | awk -F. '{print $1"."$2}')
           DOCKER_MM=$(grep -oE 'alpine/v[0-9.]+/main/' Dockerfile.alpine | sed -E 's|alpine/v([0-9.]+)/main/|\1|')
           [ "$PINNED_MM" = "$DOCKER_MM" ] || { echo "MODULE_URL_BASE drift: derived=$PINNED_MM, Dockerfile=$DOCKER_MM" >&2; exit 1; }
           echo "✓ Dockerfile.alpine fully synced"
