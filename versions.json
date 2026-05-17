@@ -1,10 +1,7 @@
 {
-  "_description": "Single source of truth for upstream versions baked into Dockerfile.alpine and Dockerfile.ubuntu. Rewritten in lockstep with the Dockerfiles by .github/workflows/check-versions.yml when any tracked upstream releases a newer version.",
+  "_description": "Single source of truth for upstream versions baked into Dockerfile.alpine. Rewritten in lockstep with the Dockerfile by .github/workflows/check-versions.yml when nginx or the current alpine major.minor's patch level drifts. To migrate to a new alpine major.minor (e.g. 3.22 -> 3.23), edit `alpine` here directly — the workflow stays within whichever major.minor is currently pinned.",
   "nginx": "1.30.1",
-  "alpine": "3.20",
-  "ubuntu": "24.04",
-  "openssl": "3.6.2",
-  "zlib": "1.3.2",
+  "alpine": "3.22.4",
   "modules": {
     "headers-more": "0.34",
     "fancyindex": "0.5.2"

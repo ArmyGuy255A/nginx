@@ -1,28 +1,27 @@
 name: check-versions
 
-# Polls upstream for fresh releases of nginx, alpine, ubuntu, openssl, zlib.
-# When ANY pinned version in versions.json drifts behind upstream:
+# Polls upstream for fresh releases of nginx + alpine (patch-level within
+# the current major.minor). When versions.json drifts behind upstream:
 #   1. Rewrites versions.json with the new values.
-#   2. Edits Dockerfile.alpine and Dockerfile.ubuntu inline so future
-#      Docker Hub builds bake in the new versions (Docker Hub builds need
-#      no --build-args — versions live in the Dockerfile).
-#   3. Commits to main. Branch-push fires DH Build Rules 1+2 which publish
-#      armyguy255a/nginx:alpine-latest and :ubuntu-latest with patched
-#      Alpine/Ubuntu indexes + new openssl/zlib/nginx source.
+#   2. Edits Dockerfile.alpine inline (FROM alpine:<patch>, ENV NGINX_VERSION,
+#      and the MODULE_URL_BASE Alpine path segment which uses major.minor).
+#   3. Commits to main. Branch-push fires DH Build Rule 1 -> :alpine-latest.
 #   4. If nginx VERSION specifically changed, also pushes tag v<new-nginx>.
-#      That fires DH Build Rules 3+4 which publish the versioned tags
-#      :alpine-<new> and :ubuntu-<new>. Versioned tags are immutable —
-#      security-only patches surface through :alpine-latest / :ubuntu-latest.
+#      That fires DH Build Rule 2 -> :alpine-<new>. Versioned tags are
+#      immutable; security-only patches surface through :alpine-latest only.
+#
+# Alpine MAJOR.MINOR bumps (3.22 -> 3.23) require a human edit to
+# versions.json — the workflow stays within whichever major.minor is
+# currently pinned to avoid breaking on Alpine releases that haven't yet
+# stocked the nginx-module-otel package.
 
 on:
   schedule:
-    # Daily 06:00 UTC — quiet hours; alpine + ubuntu typically push patches
-    # late US-business-day, so morning UTC sees the previous day's work.
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *'   # daily 06:00 UTC
   workflow_dispatch:
 
 permissions:
-  contents: write   # commit + push + tag
+  contents: write
 
 concurrency:
   group: check-versions
@@ -39,15 +38,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install jq + curl (already present on runner)
-        run: which jq curl
-
       - name: Probe upstream versions
         id: probe
         run: |
           set -euo pipefail
-
-          # --- nginx (stable from nginx.org) ---
           HTML="$(curl -fsSL https://nginx.org/en/download.html)"
           STABLE_BLOCK="$(echo "$HTML" | sed -n '/Stable version/,/Mainline version/p')"
           NGINX_LATEST="$(echo "$STABLE_BLOCK" | \
@@ -55,31 +49,14 @@ jobs:
             sed -E 's/^nginx-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' | \
             sort -V | tail -n 1)"
 
-          # --- alpine (latest 3.x stable from official Dockerhub tags page) ---
-          ALPINE_LATEST="$(curl -fsSL "https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=100" \
+          PINNED_ALPINE="$(jq -r .alpine versions.json)"
+          ALPINE_MM="${PINNED_ALPINE%.*}"
+          ALPINE_LATEST="$(curl -fsSL "https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200" \
             | jq -r '.results[].name' \
-            | grep -E '^3\.[0-9]+$' \
+            | grep -E "^${ALPINE_MM//./\\.}\\.[0-9]+$" \
             | sort -V | tail -n 1)"
 
-          # --- ubuntu (latest LTS .04 from official tags) ---
-          UBUNTU_LATEST="$(curl -fsSL "https://hub.docker.com/v2/repositories/library/ubuntu/tags?page_size=100" \
-            | jq -r '.results[].name' \
-            | grep -E '^[0-9]+\.04$' \
-            | sort -V | tail -n 1)"
-
-          # --- openssl 3.x stable (from openssl.org downloads page) ---
-          OPENSSL_LATEST="$(curl -fsSL https://www.openssl.org/source/ \
-            | grep -oE 'openssl-3\.[0-9]+\.[0-9]+\.tar\.gz' \
-            | sed -E 's/^openssl-(3\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' \
-            | sort -V | tail -n 1)"
-
-          # --- zlib (from zlib.net) ---
-          ZLIB_LATEST="$(curl -fsSL https://www.zlib.net/ \
-            | grep -oE 'zlib-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' \
-            | sed -E 's/^zlib-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$/\1/' \
-            | sort -V | tail -n 1)"
-
-          for v in NGINX ALPINE UBUNTU OPENSSL ZLIB; do
+          for v in NGINX ALPINE; do
             eval "val=\$${v}_LATEST"
             if [ -z "$val" ]; then
               echo "::error::Could not parse latest ${v} version" >&2
@@ -87,79 +64,45 @@ jobs:
             fi
           done
 
-          echo "nginx=$NGINX_LATEST"     >> "$GITHUB_OUTPUT"
-          echo "alpine=$ALPINE_LATEST"   >> "$GITHUB_OUTPUT"
-          echo "ubuntu=$UBUNTU_LATEST"   >> "$GITHUB_OUTPUT"
-          echo "openssl=$OPENSSL_LATEST" >> "$GITHUB_OUTPUT"
-          echo "zlib=$ZLIB_LATEST"       >> "$GITHUB_OUTPUT"
-
-          echo "Upstream snapshot:"
-          echo "  nginx   = $NGINX_LATEST"
-          echo "  alpine  = $ALPINE_LATEST"
-          echo "  ubuntu  = $UBUNTU_LATEST"
-          echo "  openssl = $OPENSSL_LATEST"
-          echo "  zlib    = $ZLIB_LATEST"
+          echo "nginx=$NGINX_LATEST"   >> "$GITHUB_OUTPUT"
+          echo "alpine=$ALPINE_LATEST" >> "$GITHUB_OUTPUT"
+          echo "alpine_mm=$ALPINE_MM"  >> "$GITHUB_OUTPUT"
+          echo "Upstream: nginx=$NGINX_LATEST alpine=$ALPINE_LATEST (within ${ALPINE_MM}.x)"
 
       - name: Compare against versions.json
         id: diff
         env:
-          NGINX:   ${{ steps.probe.outputs.nginx }}
-          ALPINE:  ${{ steps.probe.outputs.alpine }}
-          UBUNTU:  ${{ steps.probe.outputs.ubuntu }}
-          OPENSSL: ${{ steps.probe.outputs.openssl }}
-          ZLIB:    ${{ steps.probe.outputs.zlib }}
+          NGINX:  ${{ steps.probe.outputs.nginx }}
+          ALPINE: ${{ steps.probe.outputs.alpine }}
         run: |
           set -euo pipefail
-          P_NGINX=$(jq   -r .nginx   versions.json)
-          P_ALPINE=$(jq  -r .alpine  versions.json)
-          P_UBUNTU=$(jq  -r .ubuntu  versions.json)
-          P_OPENSSL=$(jq -r .openssl versions.json)
-          P_ZLIB=$(jq    -r .zlib    versions.json)
-          CHANGED=0
-          NGINX_CHANGED=0
-          MSG=""
-          if [ "$P_NGINX"   != "$NGINX" ]   ; then CHANGED=1; NGINX_CHANGED=1; MSG+=" nginx $P_NGINX→$NGINX"; fi
-          if [ "$P_ALPINE"  != "$ALPINE" ]  ; then CHANGED=1; MSG+=" alpine $P_ALPINE→$ALPINE"; fi
-          if [ "$P_UBUNTU"  != "$UBUNTU" ]  ; then CHANGED=1; MSG+=" ubuntu $P_UBUNTU→$UBUNTU"; fi
-          if [ "$P_OPENSSL" != "$OPENSSL" ] ; then CHANGED=1; MSG+=" openssl $P_OPENSSL→$OPENSSL"; fi
-          if [ "$P_ZLIB"    != "$ZLIB" ]    ; then CHANGED=1; MSG+=" zlib $P_ZLIB→$ZLIB"; fi
+          P_NGINX=$(jq  -r .nginx  versions.json)
+          P_ALPINE=$(jq -r .alpine versions.json)
+          CHANGED=0; NGINX_CHANGED=0; MSG=""
+          if [ "$P_NGINX"  != "$NGINX" ]  ; then CHANGED=1; NGINX_CHANGED=1; MSG+=" nginx $P_NGINX→$NGINX"; fi
+          if [ "$P_ALPINE" != "$ALPINE" ] ; then CHANGED=1; MSG+=" alpine $P_ALPINE→$ALPINE"; fi
           echo "changed=$CHANGED"             >> "$GITHUB_OUTPUT"
           echo "nginx_changed=$NGINX_CHANGED" >> "$GITHUB_OUTPUT"
           echo "msg=$MSG"                     >> "$GITHUB_OUTPUT"
-          if [ "$CHANGED" = "0" ]; then
-            echo "All versions current."
-          else
-            echo "Drift:$MSG"
-          fi
+          [ "$CHANGED" = "0" ] && echo "All versions current." || echo "Drift:$MSG"
 
-      - name: Rewrite versions.json + Dockerfiles
+      - name: Rewrite versions.json + Dockerfile.alpine
         if: steps.diff.outputs.changed == '1'
         env:
-          NGINX:   ${{ steps.probe.outputs.nginx }}
-          ALPINE:  ${{ steps.probe.outputs.alpine }}
-          UBUNTU:  ${{ steps.probe.outputs.ubuntu }}
-          OPENSSL: ${{ steps.probe.outputs.openssl }}
-          ZLIB:    ${{ steps.probe.outputs.zlib }}
+          NGINX:     ${{ steps.probe.outputs.nginx }}
+          ALPINE:    ${{ steps.probe.outputs.alpine }}
+          ALPINE_MM: ${{ steps.probe.outputs.alpine_mm }}
         run: |
           set -euo pipefail
-          jq --arg nginx "$NGINX" --arg alpine "$ALPINE" --arg ubuntu "$UBUNTU" \
-             --arg openssl "$OPENSSL" --arg zlib "$ZLIB" \
-             '.nginx=$nginx | .alpine=$alpine | .ubuntu=$ubuntu | .openssl=$openssl | .zlib=$zlib' \
+          jq --arg nginx "$NGINX" --arg alpine "$ALPINE" \
+             '.nginx=$nginx | .alpine=$alpine' \
              versions.json > versions.json.tmp
           mv versions.json.tmp versions.json
-
           sed -i \
             -e "s|^FROM alpine:.*|FROM alpine:${ALPINE}|" \
             -e "s|^ENV NGINX_VERSION=.*|ENV NGINX_VERSION=${NGINX}|" \
-            -e "s|/alpine/v[0-9.]\+/main/|/alpine/v${ALPINE}/main/|g" \
+            -e "s|/alpine/v[0-9.]\+/main/|/alpine/v${ALPINE_MM}/main/|g" \
             Dockerfile.alpine
-
-          sed -i \
-            -e "s|^FROM ubuntu:.*|FROM ubuntu:${UBUNTU}|" \
-            -e "s|^ARG NGINX_VERSION=.*|ARG NGINX_VERSION=${NGINX}|" \
-            -e "s|^ARG opensslversion=.*|ARG opensslversion=${OPENSSL}|" \
-            -e "s|^ARG zlibversion=.*|ARG zlibversion=${ZLIB}|" \
-            Dockerfile.ubuntu
 
       - name: Commit + push + maybe tag
         if: steps.diff.outputs.changed == '1'
@@ -171,9 +114,9 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add versions.json Dockerfile.alpine Dockerfile.ubuntu
+          git add versions.json Dockerfile.alpine
           if git diff --cached --quiet; then
-            echo "Nothing to commit despite drift (race?). Aborting."
+            echo "Nothing to commit despite drift (race?)."
             exit 0
           fi
           git commit -m "chore(deps):${MSG}"
@@ -181,10 +124,10 @@ jobs:
           if [ "$NGINX_CHANGED" = "1" ]; then
             TAG="v${NGINX}"
             if git rev-parse "$TAG" >/dev/null 2>&1; then
-              echo "Tag $TAG already exists — skipping tag push."
+              echo "Tag $TAG already exists — skipping."
             else
               git tag -a "$TAG" -m "nginx $NGINX (auto-cut by check-versions)"
               git push origin "refs/tags/$TAG"
-              echo "Pushed tag $TAG — DH builds :alpine-$NGINX and :ubuntu-$NGINX"
+              echo "Pushed $TAG — DH builds :alpine-$NGINX"
             fi
           fi
