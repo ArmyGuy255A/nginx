@@ -7,8 +7,9 @@ name: Deploy edge-nginx to ACA
 # workflow picks up the result on its next tick.
 #
 # Triggers:
-#   * schedule       — hourly poll (dial down to '0 */6 * * *' for laxer
-#                      cadence, or '0 12 * * *' for once-daily).
+#   * schedule       — daily poll at 04:07 UTC. Run-of-the-mill cadence
+#                      since image rolls aren't time-critical; bump to
+#                      hourly ('7 * * * *') if you change your mind.
 #   * workflow_dispatch — manual nudge; --force=true re-deploys even if
 #                      the digest hasn't changed.
 #
@@ -19,8 +20,8 @@ name: Deploy edge-nginx to ACA
 
 on:
   schedule:
-    # Hourly at :07 so we don't stampede the top of the hour cron pool.
-    - cron: '7 * * * *'
+    # Daily at 04:07 UTC (~00:07 ET) — quiet hours, dodge top-of-hour stampede.
+    - cron: '7 4 * * *'
   workflow_dispatch:
     inputs:
       image_ref:

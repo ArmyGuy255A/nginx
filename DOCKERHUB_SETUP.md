@@ -63,7 +63,7 @@ appeid-1.26.2-<sha>
 
 ## 3. ACA pull cadence — no webhook needed
 
-GitHub Actions polls Docker Hub once an hour (`.github/workflows/deploy-aca.yml`, cron `7 * * * *`) and rolls the ACA Container App **only if** the `appeid-latest` digest on Docker Hub differs from what's currently running. No webhook, no PAT in a URL, no Cloudflare Worker.
+GitHub Actions polls Docker Hub once a day (`.github/workflows/deploy-aca.yml`, cron `7 4 * * *` — 04:07 UTC) and rolls the ACA Container App **only if** the `appeid-latest` digest on Docker Hub differs from what's currently running. No webhook, no PAT in a URL, no Cloudflare Worker.
 
 The poll uses Docker Hub's public JSON API (`/v2/repositories/<repo>/tags/<tag>`) which doesn't require auth for public images, so there's nothing to configure on the Docker Hub side.
 
@@ -81,15 +81,15 @@ To change the cadence, edit the `cron:` value in `deploy-aca.yml`:
 
 | Use case | Cron |
 |---|---|
-| Hourly (default) | `7 * * * *` |
+| Daily 04:07 UTC (default) | `7 4 * * *` |
 | Every 6 hours | `7 */6 * * *` |
-| Daily 04:07 UTC | `7 4 * * *` |
+| Hourly | `7 * * * *` |
 
 ### Verify the end-to-end loop
 
 1. Push a tag from GitHub: `git tag v1.26.2.999 main && git push origin v1.26.2.999`
 2. Watch Docker Hub Builds tab — both Rules should fire and complete green.
-3. Within the next hour (or sooner if you `workflow_dispatch`), `deploy-aca.yml` picks up the new digest and rolls ACA.
+3. Within the next day (or sooner if you `workflow_dispatch`), `deploy-aca.yml` picks up the new digest and rolls ACA.
 4. ACA's new revision reaches `Healthy` within ~30s; the workflow runs a `/healthz` smoke test.
 5. `curl -I https://appeid.app/healthz` → 200.
 
