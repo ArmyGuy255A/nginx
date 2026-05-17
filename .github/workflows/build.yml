@@ -12,6 +12,12 @@ name: build-push
 #   * push tag matching v*     → build + publish armyguy255a/nginx:alpine-<ver>
 #   * workflow_dispatch        → manual one-shot
 #
+# When check-versions.yml lands a nginx-version bump it pushes both the
+# main branch commit AND a v<ver> tag, which fires this workflow twice
+# (one run per ref). That's an accepted trade-off: each run is cheap with
+# the GH Actions buildx cache, and only successfully-built images ever
+# reach Docker Hub. A failed build leaves Docker Hub untouched.
+#
 # Required secrets (one-time GH repo setup):
 #   DOCKERHUB_USERNAME   armyguy255a
 #   DOCKERHUB_TOKEN      Personal Access Token (Read & Write) from
@@ -101,4 +107,6 @@ jobs:
               echo "- **Push:** ✅ to Docker Hub"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+
 
