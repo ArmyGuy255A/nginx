@@ -14,17 +14,30 @@ jobs:
     name: GitHub Actions lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           set -euo pipefail
           docker run --rm -v "$PWD:/repo:ro" -w /repo \
             rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          docker run --rm --entrypoint shellcheck -v "$PWD:/repo:ro" \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            /repo/.github/scripts/check-upstream.sh /repo/.github/scripts/smoke-image.sh
+
+  dependency-logic:
+    name: Dependency and vulnerability policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          python3 .github/scripts/versions.py --check
 
   versions-json:
     name: versions.json schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           set -euo pipefail
           jq -e '.nginx and .alpine'                                  versions.json >/dev/null
@@ -38,7 +51,7 @@ jobs:
     name: Dockerfile.alpine matches versions.json
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           set -euo pipefail
           PINNED=$(jq -r .nginx versions.json)

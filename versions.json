@@ -1,9 +1,11 @@
 {
-  "_description": "Pinned nginx and Alpine versions, updated with Dockerfile.alpine by check-versions.yml. nginx follows the master branch version after signed source is published; Alpine updates require an available OpenTelemetry module and a successful build.",
+  "_description": "Pinned nginx, Alpine and module versions, updated with Dockerfile.alpine by check-versions.yml. The daily fresh rebuild also refreshes OS package patches. Alpine adoption requires an exact-version OpenTelemetry module and successful module smoke tests; publication requires the vulnerability gate to pass.",
   "nginx": "1.31.6",
   "alpine": "3.24.2",
   "modules": {
-    "headers-more": "0.34",
-    "fancyindex": "0.5.2"
+    "headers-more": "0.40",
+    "fancyindex": "0.6.0",
+    "substitutions": "e12e965ac1837ca709709f9a26f572a54d83430e",
+    "otel-apk": "nginx-module-otel-1.31.6.0.1.2-r1.apk"
   }
 }
