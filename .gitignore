@@ -39,3 +39,4 @@ Services/*
 !.placeholder
 # Local automation diagnostics
 .codex/scratch/
+__pycache__/

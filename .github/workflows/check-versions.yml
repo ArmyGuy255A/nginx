@@ -1,14 +1,12 @@
 name: check-versions
 
-# Watch nginx master; adopt its version only once signed source is published.
 on:
   schedule:
-    - cron: '0 6 * * *'   # daily 06:00 UTC
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
-  actions: read
 
 concurrency:
   group: check-versions
@@ -16,215 +14,57 @@ concurrency:
 
 jobs:
   bump:
-    name: Probe upstream + apply bumps
+    name: Refresh upstream dependencies
     runs-on: ubuntu-latest
     outputs:
-      publish: ${{ steps.publish.outputs.publish }}
-      ref: ${{ steps.publish.outputs.ref }}
+      ref: ${{ steps.ref.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Probe upstream versions (otel-apk-aware)
+      - name: Probe upstream versions
         id: probe
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
+        run: bash .github/scripts/check-upstream.sh
 
-          NGINX_LATEST="$(curl --retry 3 -fsSL https://raw.githubusercontent.com/nginx/nginx/master/src/core/nginx.h \
-            | sed -nE 's/^#define NGINX_VERSION[[:space:]]+"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p')"
-          [[ "$NGINX_LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid upstream nginx version' >&2; exit 1; }
-          PINNED_NGINX="$(jq -r .nginx versions.json)"
-          # A master version bump can precede the signed release tarball.
-          for suffix in tar.gz tar.gz.asc; do
-            STATUS="$(curl --retry 3 -sSL -o /dev/null -w '%{http_code}' --head "https://nginx.org/download/nginx-$NGINX_LATEST.$suffix")"
-            if [ "$STATUS" = 404 ]; then
-              echo "Master version $NGINX_LATEST is not published yet; checking released versions"
-              NGINX_LATEST="$(gh api 'repos/nginx/nginx/releases?per_page=30' \
-                --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
-                | sed -nE 's/^release-([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -n 1)"
-              [[ "$NGINX_LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'No valid upstream release found' >&2; exit 1; }
-              curl --retry 3 -fsSL --head "https://nginx.org/download/nginx-$NGINX_LATEST.tar.gz" >/dev/null
-              curl --retry 3 -fsSL --head "https://nginx.org/download/nginx-$NGINX_LATEST.tar.gz.asc" >/dev/null
-              break
-            fi
-            [ "$STATUS" = 200 ] || { echo "Upstream source probe failed: HTTP $STATUS" >&2; exit 1; }
-          done
-          if [ "$(printf '%s\n' "$PINNED_NGINX" "$NGINX_LATEST" | sort -V | tail -n 1)" != "$NGINX_LATEST" ]; then
-            echo 'Refusing nginx downgrade' >&2; exit 1
-          fi
-
-          # --- alpine major.minor candidates (newest first) ---
-          PINNED_ALPINE="$(jq -r .alpine versions.json)"
-          PINNED_MM="$(echo "$PINNED_ALPINE" | awk -F. '{print $1"."$2}')"
-
-          ALPINE_TAGS_JSON="$(curl -fsSL 'https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200')"
-          # All major.minor tags on DH (any major: 3.x, 4.x, etc.), sorted
-          # highest-first. The otel-apk probe + test-build gates below
-          # protect against a major bump where package names or build
-          # tooling have shifted incompatibly.
-          ALL_MM=$(echo "$ALPINE_TAGS_JSON" \
-            | jq -r '.results[].name' \
-            | grep -E '^[0-9]+\.[0-9]+$' \
-            | sort -Vr | uniq)
-          echo "Available Alpine major.minors: $(echo "$ALL_MM" | tr '\n' ' ')"
-
-          # --- resolve a SAFE major.minor: highest mm where the nginx
-          #     otel apk exists on nginx.org ---
-          SAFE_MM=""
-          for mm in $ALL_MM; do
-            URL="https://nginx.org/packages/alpine/v${mm}/main/x86_64/"
-            APK="$(curl -fsSL "$URL" 2>/dev/null \
-              | grep -oE 'nginx-module-otel-[0-9.]+-r[0-9]+\.apk' \
-              | head -n 1 || true)"
-            if [ -n "$APK" ]; then
-              echo "  ✓ $URL has $APK"
-              SAFE_MM="$mm"
-              break
-            else
-              echo "  ✗ $URL — no otel apk yet"
-            fi
-          done
-
-          if [ -z "$SAFE_MM" ]; then
-            echo "::warning::No Alpine minor with the otel apk found; staying on currently pinned ${PINNED_MM}."
-            SAFE_MM="$PINNED_MM"
-          fi
-
-          # --- within SAFE_MM, prefer latest patch (e.g. 3.23.1); fall
-          #     back to bare major.minor tag (e.g. 3.23) if no patches
-          #     have been published yet for that minor. Tomorrow's run
-          #     will pick up the first patch as soon as it's tagged. ---
-          ALPINE_LATEST=$(echo "$ALPINE_TAGS_JSON" \
-            | jq -r '.results[].name' \
-            | grep -E "^${SAFE_MM//./\\.}\\.[0-9]+$" \
-            | sort -V | tail -n 1 || true)
-
-          if [ -z "$ALPINE_LATEST" ]; then
-            # No 3.<minor>.<patch> on DH yet — use the bare 3.<minor> tag.
-            # We already know SAFE_MM exists as a tag because we got it
-            # from the ALL_MM listing above.
-            ALPINE_LATEST="$SAFE_MM"
-            echo "  No patch tags for ${SAFE_MM} yet; pinning bare tag '${SAFE_MM}'"
-          fi
-
-          {
-            echo "nginx=$NGINX_LATEST"
-            echo "alpine=$ALPINE_LATEST"
-            echo "alpine_mm=$SAFE_MM"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "Resolved upstream snapshot:"
-          echo "  nginx  = $NGINX_LATEST"
-          echo "  alpine = $ALPINE_LATEST (within ${SAFE_MM}.x; otel apk verified)"
-
-      - name: Compare against versions.json
-        id: diff
+      - name: Update manifest and Dockerfile
+        id: update
         env:
-          NGINX:  ${{ steps.probe.outputs.nginx }}
+          NGINX: ${{ steps.probe.outputs.nginx }}
           ALPINE: ${{ steps.probe.outputs.alpine }}
+          HEADERS_MORE: ${{ steps.probe.outputs.headers_more }}
+          FANCYINDEX: ${{ steps.probe.outputs.fancyindex }}
+          SUBSTITUTIONS: ${{ steps.probe.outputs.substitutions }}
+          OTEL: ${{ steps.probe.outputs.otel }}
+        run: python3 .github/scripts/versions.py
+
+      - name: Verify dependency changes before commit
+        if: steps.update.outputs.changed == '1'
         run: |
           set -euo pipefail
-          P_NGINX=$(jq  -r .nginx  versions.json)
-          P_ALPINE=$(jq -r .alpine versions.json)
-          CHANGED=0; NGINX_CHANGED=0; MSG=""
-          if [ "$P_NGINX"  != "$NGINX" ]  ; then CHANGED=1; NGINX_CHANGED=1; MSG+=" nginx $P_NGINX→$NGINX"; fi
-          if [ "$P_ALPINE" != "$ALPINE" ] ; then CHANGED=1; MSG+=" alpine $P_ALPINE→$ALPINE"; fi
-          {
-            echo "changed=$CHANGED"
-            echo "nginx_changed=$NGINX_CHANGED"
-            echo "msg=$MSG"
-          } >> "$GITHUB_OUTPUT"
-          [ "$CHANGED" = "0" ] && echo "All versions current." || echo "Drift:$MSG"
+          docker build --pull --no-cache -f Dockerfile.alpine -t check-versions:verify .
+          bash .github/scripts/smoke-image.sh check-versions:verify
 
-      - name: Rewrite versions.json + Dockerfile.alpine
-        if: steps.diff.outputs.changed == '1'
-        env:
-          NGINX:     ${{ steps.probe.outputs.nginx }}
-          ALPINE:    ${{ steps.probe.outputs.alpine }}
-          ALPINE_MM: ${{ steps.probe.outputs.alpine_mm }}
+      - name: Commit verified dependency update
+        if: steps.update.outputs.changed == '1'
         run: |
           set -euo pipefail
-          jq --arg nginx "$NGINX" --arg alpine "$ALPINE" \
-             '.nginx=$nginx | .alpine=$alpine' \
-             versions.json > versions.json.tmp
-          mv versions.json.tmp versions.json
-
-          # ALPINE_MM is the validated major.minor (the resolved SAFE_MM,
-          # which is what MODULE_URL_BASE needs regardless of whether
-          # ALPINE is "3.23.1" or bare "3.23").
-          sed -i \
-            -e "s|^FROM alpine:.*|FROM alpine:${ALPINE}|" \
-            -e "s|^ENV NGINX_VERSION=.*|ENV NGINX_VERSION=${NGINX}|" \
-            -e "s|/alpine/v[0-9.]\+/main/|/alpine/v${ALPINE_MM}/main/|g" \
-            Dockerfile.alpine
-
-      - name: Verify proposed Dockerfile actually builds
-        # Critical safety gate. The otel-apk probe protects against
-        # missing nginx-module packages, but it can't catch:
-        #   * Alpine major bumps where `apk add` package names change
-        #     (e.g. openssl-dev -> openssl3-dev) or musl ABI shifts
-        #   * nginx source tarball moves / configure-flag changes
-        #   * Mismatched module versions vs nginx
-        # Running a real `docker build` is the only way to know the
-        # bump is mergeable. If it fails, abort the commit — main
-        # stays on the last-known-good versions, and tomorrow's cron
-        # will probe again. The image deployed to ACA is unaffected
-        # because :alpine-latest doesn't move until a successful build
-        # lands on Docker Hub.
-        if: steps.diff.outputs.changed == '1'
-        run: |
-          set -euo pipefail
-          echo "::group::Verifying docker build against proposed versions"
-          docker build -f Dockerfile.alpine -t check-versions:verify .
-          echo "::endgroup::"
-
-          echo "::group::Smoke test: nginx -V on built image"
-          docker run --rm check-versions:verify nginx -V
-          docker run --rm check-versions:verify nginx -t
-          echo "::endgroup::"
-
-          echo "✓ Proposed Dockerfile builds and nginx starts cleanly."
-
-      - name: Commit verified version update
-        if: steps.diff.outputs.changed == '1'
-        env:
-          MSG: ${{ steps.diff.outputs.msg }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add versions.json Dockerfile.alpine
-          git diff --cached --quiet || git commit -m "chore(deps):$MSG"
+          git commit -m 'chore(deps): refresh nginx, alpine and module versions'
           git push origin HEAD:main
 
-      - name: Determine whether publication is needed
-        id: publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHANGED: ${{ steps.diff.outputs.changed }}
-        run: |
-          set -euo pipefail
-          VERSION="$(jq -r .nginx versions.json)"
-          # Retry a failed publication even if the version commit already landed.
-          if RELEASES="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" 2>&1)"; then
-            EXISTS=1
-          else
-            if [[ "$RELEASES" == *"HTTP 404"* ]]; then EXISTS=0; else echo "$RELEASES" >&2; exit 1; fi
-          fi
-          PUBLISH=false
-          PREVIOUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/check-versions.yml/runs?status=completed&per_page=1" --jq '.workflow_runs[0].conclusion // "none"')"
-          if [ "$CHANGED" = 1 ] || [ "$EXISTS" = 0 ] || [ "$PREVIOUS" = failure ]; then PUBLISH=true; fi
-          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
-          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Resolve exact publication commit
+        id: ref
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: bump
-    if: needs.bump.outputs.publish == 'true'
+    # Refresh package patches every day even when all version pins are unchanged.
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.bump.outputs.ref }}
