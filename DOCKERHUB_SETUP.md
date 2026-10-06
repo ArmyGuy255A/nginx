@@ -1,93 +1,78 @@
-# Docker Hub setup for `armyguy255a/nginx`
+# Docker Hub pipeline
 
-> **2027-04-01:** Docker is retiring Automated Builds. This repo migrated to **GitHub Actions** per Docker's official migration guidance (<https://docs.docker.com/docker-hub/repos/manage/builds/migrate/>). All image builds now happen in `.github/workflows/build.yml`. There are no Docker Hub Build Rules to configure.
+GitHub Actions builds and publishes `armyguy255a/nginx` to Docker Hub.
 
-Produces 2 image tags:
+## Automatic upstream updates
 
-| Tag | Trigger | Mutability |
-|---|---|---|
-| `armyguy255a/nginx:alpine-latest` | push to `main` (incl. `check-versions.yml` bumps) | rolling |
-| `armyguy255a/nginx:alpine-<ver>` | git-tag push `v<ver>` | immutable snapshot |
+`check-versions.yml` runs daily at 06:00 UTC and can be run manually from
+the Actions tab. It reads `NGINX_VERSION` from `nginx/nginx`'s `master`
+branch. A version bump is adopted only after nginx.org publishes both
+the source tarball and its detached signature. When master contains an
+unpublished development version, the checker uses the newest published
+nginx release with signed source instead. Development commits without a
+version bump do not trigger a rebuild.
 
-## One-time setup
+The checker retains the existing Alpine update logic: select a Docker Hub
+Alpine version with an available nginx OpenTelemetry module package.
+Before committing updated versions, it builds the proposed Dockerfile and
+runs `nginx -V` and `nginx -t`. Failures leave `main` unchanged.
 
-### 1. Create a Docker Hub Personal Access Token
+After committing, the checker calls the reusable `build.yml` workflow with
+the exact commit SHA. This explicit call is necessary because pushes made
+using `GITHUB_TOKEN` do not trigger another push workflow.
 
-1. Sign in to <https://hub.docker.com>.
-2. Top-right avatar → **Account Settings** → **Personal Access Tokens** → **Generate new token**.
-3. Description: `gh-actions-armyguy255a-nginx`.
-4. **Access permissions: Read & Write**.
-5. Copy the token (you only see it once).
+The publishing workflow builds the image, checks its nginx version and
+configuration, starts it as the default non-root user, and checks HTTP on
+port 8080. It publishes the verified build layers from Buildx cache with
+SBOM and provenance attestations, then creates the `v<nginx-version>`
+Git tag and GitHub release. An unsuccessful publication without a release
+is retried on the next scheduled check even if the version commit landed.
 
-### 2. Add the token + username as GitHub Actions secrets
+## Published tags
 
-In `ArmyGuy255A/nginx` → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+| Image tag | Behavior |
+| --- | --- |
+| `latest` | Rolling image from current `main` |
+| `alpine-latest` | Same image as `latest`; existing consumer alias |
+| `alpine-<nginx-version>` | Image for the pinned nginx version; refreshed on rebuilds |
+| `sha-<commit>` | Image associated with the full repository commit SHA |
 
-| Secret name | Value |
-|---|---|
+Version image tags can change when Alpine or this repository changes while
+the nginx version remains the same. Pin an image digest for reproducibility.
+Existing Git release tags are never moved. A manual historical tag build
+publishes only its version image tag and does not roll back `latest`.
+
+Pull requests build and smoke-test without logging in or publishing.
+Pushes to `main` publish. Manual `build-push` runs must target current
+`main` or a release tag matching `versions.json`. Publication runs are
+serialized and are not canceled partway through.
+
+## Required repository setup
+
+The repository must enable GitHub Actions and allow its token to push
+version commits and release tags to `main`. If branch rules prohibit bot
+pushes, the version commit will fail visibly and those rules need an
+appropriate automation exception.
+
+Configure these repository Actions secrets:
+
+| Secret | Value |
+| --- | --- |
 | `DOCKERHUB_USERNAME` | `armyguy255a` |
-| `DOCKERHUB_TOKEN` | the PAT from step 1 |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with Read & Write access |
 
-The same token can be reused for `ArmyGuy255A/nginx-appeid` (one token works across multiple repos under the same DH namespace). Add the same two secrets there too.
+Do not configure a second Docker Hub automated build for the same tags;
+GitHub Actions owns publishing. Confirm successful publication before
+removing any existing automated build configuration.
 
-### 3. Delete the legacy Build configuration on Docker Hub
+## Verification
 
-Once you've verified GitHub Actions is building + pushing successfully (after the first push to `main` post-merge):
+1. Merge the pipeline changes to `main`.
+2. Run `check-versions` from the Actions tab to check upstream immediately.
+3. Confirm both the version check and its called publication job succeed.
+4. Confirm the GitHub release and pull `armyguy255a/nginx:latest`.
+5. Run the container with `-p 8080:8080` and check HTTP at port 8080.
 
-1. Docker Hub → `armyguy255a/nginx` → **Builds** tab.
-2. **Configure automated builds** → **Delete Build Configuration**.
-
-After that there's nothing else to manage on Docker Hub for this repo — only `.github/workflows/build.yml` decides what gets pushed.
-
-## How it flows
-
-```mermaid
-flowchart TD
-    CV[check-versions.yml<br/>daily 06:00 UTC<br/>probes nginx.org + DH alpine tags]
-    CV --> D{Any version<br/>drifts?}
-    D -->|no| Done[done]
-    D -->|yes| TB[Pre-commit test-build:<br/>docker build + nginx -V]
-    TB -->|fail| Skip[abort — main untouched<br/>retry tomorrow]
-    TB -->|ok| C[Rewrite versions.json<br/>+ Dockerfile.alpine<br/>commit + push main]
-    C --> BW[build.yml fires<br/>on push to main]
-    BW -->|docker/build-push-action| L[Docker Hub<br/>:alpine-latest]
-    C --> Q{nginx version<br/>specifically changed?}
-    Q -->|no| Stop[stop]
-    Q -->|yes| Tag[push tag v&lt;new-nginx&gt;]
-    Tag --> BT[build.yml fires<br/>on tag push]
-    BT -->|docker/build-push-action| V[Docker Hub<br/>:alpine-&lt;new&gt;]
-```
-
-`:alpine-latest` rolls forward continuously. Versioned tags are immutable snapshots — consumers wanting auto-updates pin `:alpine-latest`; consumers wanting reproducibility pin a specific version like `:alpine-1.30.1`.
-
-## Major-version transitions (Alpine 4, nginx 2)
-
-Fully automated. Three safety gates protect against breakage:
-
-1. **otel-apk presence**: the workflow only adopts an Alpine major.minor if `nginx-module-otel-*.apk` has been published for it at `nginx.org/packages/alpine/v<mm>/main/x86_64/`. Falls back through older minors until one has the apk.
-2. **DH tag existence**: only Alpine versions that actually exist as DH tags are eligible.
-3. **Pre-commit test-build**: after sed-ing the proposed versions in, `check-versions.yml` runs a real `docker build -f Dockerfile.alpine .` + `docker run --rm ... nginx -V`. If either fails, the workflow exits **before** the commit step. main and `:alpine-latest` stay on the last-known-good; tomorrow's run retries.
-
-So Alpine 3 → 4 and nginx 1 → 2 are both hands-off transitions — the bumper either lands them cleanly or sits on the previous version while warning red in the Actions tab.
-
-## Bare-minor fallback
-
-If a new Alpine minor (e.g. `3.23`) is published but no `3.23.0` patch tag exists yet, the workflow pins the bare `3.23` tag. The next day's run picks up `3.23.1` as soon as it appears.
-
-## GitHub Actions runner minutes budget
-
-| Workflow | Cadence | Runner minutes / run |
-|---|---|---|
-| `validate.yml` | on PR / push | ~1 min |
-| `check-versions.yml` (no drift) | daily | ~30s |
-| `check-versions.yml` (drift; runs full test-build) | bump days only | ~5 min |
-| `build.yml` | on every push to main + every `v*` tag | ~5 min (drops to ~1 min on cache hit) |
-
-For a public repo, GH Actions is free. For private, this stays well under the free-tier 2000 min/month even with daily activity.
-
-## Verifying after setup
-
-1. Push a no-op commit to `main` (e.g. README typo fix) — `build.yml` should fire and push `:alpine-latest`.
-2. Push the existing `v1.26.2` tag once to backfill the immutable variant: `git push origin refs/tags/v1.26.2`. `build.yml` should fire and push `:alpine-1.26.2`.
-3. `docker pull armyguy255a/nginx:alpine-latest` → 200 OK.
-4. Once both work, delete the DH Build configuration per step 3 of one-time setup.
+The default image uses `ConfigTemplate/container-nginx.conf`. Service-specific
+configurations remain available under `Services/`; downstream configurations
+must support the non-root nginx user.

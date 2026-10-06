@@ -1,20 +1,6 @@
 name: check-versions
 
-# Polls upstream for nginx + Alpine. Fully hands-off:
-#   * Probes both the latest stable nginx version and the latest Alpine
-#     major.minor on Docker Hub library/alpine.
-#   * Before adopting a NEW Alpine major.minor, verifies the
-#     nginx-module-otel APK has been published for that version at
-#     https://nginx.org/packages/alpine/v<mm>/main/x86_64/. If the apk
-#     is missing (new Alpine not yet stocked), falls back to whatever
-#     major.minor is currently pinned and only bumps the patch level
-#     there. So the workflow never picks an Alpine that breaks the
-#     image build.
-#   * Within the resolved major.minor, finds the latest .patch tag on DH.
-#   * Rewrites versions.json + Dockerfile.alpine, commits to main.
-#   * If nginx VERSION specifically changed, also pushes tag v<nginx> so
-#     DH Build Rule 2 publishes the immutable :alpine-<ver> tag.
-
+# Watch nginx master; adopt its version only once signed source is published.
 on:
   schedule:
     - cron: '0 6 * * *'   # daily 06:00 UTC
@@ -22,15 +8,19 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: check-versions
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   bump:
     name: Probe upstream + apply bumps
     runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.publish.outputs.publish }}
+      ref: ${{ steps.publish.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,23 +30,37 @@ jobs:
 
       - name: Probe upstream versions (otel-apk-aware)
         id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          # --- nginx: latest release from nginx/nginx GitHub releases ---
-          # Picks the highest-versioned non-draft, non-prerelease release.
-          # nginx releases on two parallel tracks (mainline = odd minor like
-          # 1.31.x; stable = even minor like 1.30.x), but the user has opted
-          # to always run mainline (latest features + perf + security fixes
-          # land here first). No track filter applied.
-          NGINX_LATEST="$(curl -fsSL 'https://api.github.com/repos/nginx/nginx/releases?per_page=30' \
-            | jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
-            | sed -E 's/^release-//' \
-            | sort -V | tail -n 1)"
+          NGINX_LATEST="$(curl --retry 3 -fsSL https://raw.githubusercontent.com/nginx/nginx/master/src/core/nginx.h \
+            | sed -nE 's/^#define NGINX_VERSION[[:space:]]+"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p')"
+          [[ "$NGINX_LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid upstream nginx version' >&2; exit 1; }
+          PINNED_NGINX="$(jq -r .nginx versions.json)"
+          # A master version bump can precede the signed release tarball.
+          for suffix in tar.gz tar.gz.asc; do
+            STATUS="$(curl --retry 3 -sSL -o /dev/null -w '%{http_code}' --head "https://nginx.org/download/nginx-$NGINX_LATEST.$suffix")"
+            if [ "$STATUS" = 404 ]; then
+              echo "Master version $NGINX_LATEST is not published yet; checking released versions"
+              NGINX_LATEST="$(gh api 'repos/nginx/nginx/releases?per_page=30' \
+                --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+                | sed -nE 's/^release-([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -n 1)"
+              [[ "$NGINX_LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'No valid upstream release found' >&2; exit 1; }
+              curl --retry 3 -fsSL --head "https://nginx.org/download/nginx-$NGINX_LATEST.tar.gz" >/dev/null
+              curl --retry 3 -fsSL --head "https://nginx.org/download/nginx-$NGINX_LATEST.tar.gz.asc" >/dev/null
+              break
+            fi
+            [ "$STATUS" = 200 ] || { echo "Upstream source probe failed: HTTP $STATUS" >&2; exit 1; }
+          done
+          if [ "$(printf '%s\n' "$PINNED_NGINX" "$NGINX_LATEST" | sort -V | tail -n 1)" != "$NGINX_LATEST" ]; then
+            echo 'Refusing nginx downgrade' >&2; exit 1
+          fi
 
           # --- alpine major.minor candidates (newest first) ---
           PINNED_ALPINE="$(jq -r .alpine versions.json)"
-          PINNED_MM="${PINNED_ALPINE%.*}"
+          PINNED_MM="$(echo "$PINNED_ALPINE" | awk -F. '{print $1"."$2}')"
 
           ALPINE_TAGS_JSON="$(curl -fsSL 'https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=200')"
           # All major.minor tags on DH (any major: 3.x, 4.x, etc.), sorted
@@ -98,7 +102,7 @@ jobs:
           ALPINE_LATEST=$(echo "$ALPINE_TAGS_JSON" \
             | jq -r '.results[].name' \
             | grep -E "^${SAFE_MM//./\\.}\\.[0-9]+$" \
-            | sort -V | tail -n 1)
+            | sort -V | tail -n 1 || true)
 
           if [ -z "$ALPINE_LATEST" ]; then
             # No 3.<minor>.<patch> on DH yet — use the bare 3.<minor> tag.
@@ -108,9 +112,11 @@ jobs:
             echo "  No patch tags for ${SAFE_MM} yet; pinning bare tag '${SAFE_MM}'"
           fi
 
-          echo "nginx=$NGINX_LATEST"     >> "$GITHUB_OUTPUT"
-          echo "alpine=$ALPINE_LATEST"   >> "$GITHUB_OUTPUT"
-          echo "alpine_mm=$SAFE_MM"      >> "$GITHUB_OUTPUT"
+          {
+            echo "nginx=$NGINX_LATEST"
+            echo "alpine=$ALPINE_LATEST"
+            echo "alpine_mm=$SAFE_MM"
+          } >> "$GITHUB_OUTPUT"
 
           echo "Resolved upstream snapshot:"
           echo "  nginx  = $NGINX_LATEST"
@@ -128,9 +134,11 @@ jobs:
           CHANGED=0; NGINX_CHANGED=0; MSG=""
           if [ "$P_NGINX"  != "$NGINX" ]  ; then CHANGED=1; NGINX_CHANGED=1; MSG+=" nginx $P_NGINX→$NGINX"; fi
           if [ "$P_ALPINE" != "$ALPINE" ] ; then CHANGED=1; MSG+=" alpine $P_ALPINE→$ALPINE"; fi
-          echo "changed=$CHANGED"             >> "$GITHUB_OUTPUT"
-          echo "nginx_changed=$NGINX_CHANGED" >> "$GITHUB_OUTPUT"
-          echo "msg=$MSG"                     >> "$GITHUB_OUTPUT"
+          {
+            echo "changed=$CHANGED"
+            echo "nginx_changed=$NGINX_CHANGED"
+            echo "msg=$MSG"
+          } >> "$GITHUB_OUTPUT"
           [ "$CHANGED" = "0" ] && echo "All versions current." || echo "Drift:$MSG"
 
       - name: Rewrite versions.json + Dockerfile.alpine
@@ -176,35 +184,48 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Smoke test: nginx -V on built image"
-          docker run --rm check-versions:verify nginx -V 2>&1 | head -n 20
+          docker run --rm check-versions:verify nginx -V
+          docker run --rm check-versions:verify nginx -t
           echo "::endgroup::"
 
           echo "✓ Proposed Dockerfile builds and nginx starts cleanly."
 
-      - name: Commit + push + maybe tag
+      - name: Commit verified version update
         if: steps.diff.outputs.changed == '1'
         env:
-          NGINX:         ${{ steps.probe.outputs.nginx }}
-          NGINX_CHANGED: ${{ steps.diff.outputs.nginx_changed }}
-          MSG:           ${{ steps.diff.outputs.msg }}
+          MSG: ${{ steps.diff.outputs.msg }}
         run: |
           set -euo pipefail
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add versions.json Dockerfile.alpine
-          if git diff --cached --quiet; then
-            echo "Nothing to commit despite drift."
-            exit 0
-          fi
-          git commit -m "chore(deps):${MSG}"
+          git diff --cached --quiet || git commit -m "chore(deps):$MSG"
           git push origin HEAD:main
-          if [ "$NGINX_CHANGED" = "1" ]; then
-            TAG="v${NGINX}"
-            if git rev-parse "$TAG" >/dev/null 2>&1; then
-              echo "Tag $TAG already exists — skipping."
-            else
-              git tag -a "$TAG" -m "nginx $NGINX (auto-cut by check-versions)"
-              git push origin "refs/tags/$TAG"
-              echo "Pushed $TAG — DH builds :alpine-$NGINX"
-            fi
+
+      - name: Determine whether publication is needed
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGED: ${{ steps.diff.outputs.changed }}
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r .nginx versions.json)"
+          # Retry a failed publication even if the version commit already landed.
+          if RELEASES="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" 2>&1)"; then
+            EXISTS=1
+          else
+            if [[ "$RELEASES" == *"HTTP 404"* ]]; then EXISTS=0; else echo "$RELEASES" >&2; exit 1; fi
           fi
+          PUBLISH=false
+          PREVIOUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/check-versions.yml/runs?status=completed&per_page=1" --jq '.workflow_runs[0].conclusion // "none"')"
+          if [ "$CHANGED" = 1 ] || [ "$EXISTS" = 0 ] || [ "$PREVIOUS" = failure ]; then PUBLISH=true; fi
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: bump
+    if: needs.bump.outputs.publish == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.bump.outputs.ref }}
+    secrets: inherit

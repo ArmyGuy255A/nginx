@@ -19,7 +19,7 @@ RUN apk update && \
 
 
 RUN mkdir -p /var/www/html \
-    && GPG_KEYS=D6786CE303D9A9022998DC6CC8464D549AF75C0A \
+    && GPG_KEYS="D6786CE303D9A9022998DC6CC8464D549AF75C0A 43387825DDB1BB97EC36BA5D007C8D7C15D87369" \
     && CONFIG="\
         --prefix=/etc/nginx \
         --sbin-path=/usr/sbin/nginx \
@@ -93,20 +93,14 @@ RUN mkdir -p /var/www/html \
     && curl -sfSL https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz -o nginx.tar.gz \
     && curl -sfSL https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz.asc  -o nginx.tar.gz.asc \
     && export GNUPGHOME="$(mktemp -d)" \
-    && found=''; \
-    for server in \
-        ha.pool.sks-keyservers.net \
-        hkp://keyserver.ubuntu.com:80 \
-        hkp://p80.pool.sks-keyservers.net:80 \
-        pgp.mit.edu \
-    ; do \
-        echo "Fetching GPG key $GPG_KEYS from $server"; \
-        gpg --keyserver "$server" --keyserver-options timeout=10 --recv-keys "$GPG_KEYS" && found=yes && break; \
-    done; \
-    test -z "$found" && echo >&2 "error: failed to fetch GPG key $GPG_KEYS" && exit 1; \
-    gpg --batch --verify nginx.tar.gz.asc nginx.tar.gz \
-    && pkill -9 gpg-agent \
-    && pkill -9 dirmngr \
+    && curl --retry 3 -fsSL https://nginx.org/keys/pluknet.key -o pluknet.key \
+    && curl --retry 3 -fsSL https://nginx.org/keys/arut.key -o arut.key \
+    && gpg --batch --import pluknet.key arut.key \
+    && for key in $GPG_KEYS; do gpg --batch --list-keys "$key" >/dev/null || exit 1; done \
+    && gpg --batch --status-fd 1 --verify nginx.tar.gz.asc nginx.tar.gz > /tmp/nginx-signature \
+    && grep -Eq '^\[GNUPG:\] VALIDSIG (D6786CE303D9A9022998DC6CC8464D549AF75C0A|43387825DDB1BB97EC36BA5D007C8D7C15D87369) ' /tmp/nginx-signature \
+    && gpgconf --kill all \
+    && rm pluknet.key arut.key /tmp/nginx-signature \
     && rm -r "$GNUPGHOME" nginx.tar.gz.asc \
     && mkdir -p /usr/src \
     && tar -zxC /usr/src -f nginx.tar.gz \
@@ -175,7 +169,7 @@ COPY ConfigTemplate/nginx.conf /etc/nginx/nginx.conf
 COPY www /var/www
 
 # Add in Template NGINX configuration files
-COPY Services/http/nginx.conf /etc/nginx
+COPY ConfigTemplate/container-nginx.conf /etc/nginx/nginx.conf
 
 # COPY conf/nginx.vh.default.conf /etc/nginx/conf.d/default.conf
 RUN wget -qO- $MODULE_URL_BASE | \
