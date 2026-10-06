@@ -1,7 +1,7 @@
 {
   "_description": "Pinned nginx and Alpine versions, updated with Dockerfile.alpine by check-versions.yml. nginx follows the master branch version after signed source is published; Alpine updates require an available OpenTelemetry module and a successful build.",
-  "nginx": "1.31.1",
-  "alpine": "3.23.4",
+  "nginx": "1.31.6",
+  "alpine": "3.24.2",
   "modules": {
     "headers-more": "0.34",
     "fancyindex": "0.5.2"

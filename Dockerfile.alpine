@@ -1,11 +1,11 @@
-FROM alpine:3.23.4
+FROM alpine:3.24.2
 
 WORKDIR /var/www/html
 
-ENV NGINX_VERSION=1.31.1
+ENV NGINX_VERSION=1.31.6
 ENV MORE_SET_HEADER_VERSION=0.34
 ENV FANCYINDEX=0.5.2
-ENV MODULE_URL_BASE=https://nginx.org/packages/alpine/v3.23/main/x86_64/
+ENV MODULE_URL_BASE=https://nginx.org/packages/alpine/v3.24/main/x86_64/
 
 # Refresh apk index + upgrade every preinstalled package to the latest
 # patches available in alpine v3.23/main. This shifts the effective base
