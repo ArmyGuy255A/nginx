@@ -1,26 +1,5 @@
 name: build-push
 
-# Replaces Docker Hub Automated Builds (deprecated by Docker; full retire
-# 2027-04-01). See https://docs.docker.com/docker-hub/repos/manage/builds/migrate/
-# Pattern mirrors Docker's reference workflow at
-# https://github.com/docker/autobuilds-actions
-#
-# Triggers:
-#   * pull_request to main     → build (load locally), DON'T push.
-#                                Catches Dockerfile regressions in PRs.
-#   * push to `main`           → build + publish armyguy255a/nginx:alpine-latest
-#                                AND armyguy255a/nginx:alpine-<nginx ver>
-#                                (nginx version read from versions.json)
-#   * push tag matching v*     → build + publish armyguy255a/nginx:alpine-<ver>
-#   * workflow_dispatch        → manual one-shot
-#
-# Required secrets (one-time GH repo setup):
-#   DOCKERHUB_USERNAME   armyguy255a
-#   DOCKERHUB_TOKEN      Personal Access Token (Read & Write) from
-#                        hub.docker.com → Account Settings → Personal
-#                        Access Tokens. Store in repo Settings → Secrets
-#                        and variables → Actions.
-
 on:
   pull_request:
     branches: [main]
@@ -28,100 +7,164 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
 
 permissions:
   contents: read
 
-env:
-  IMAGE: armyguy255a/nginx
-
 concurrency:
-  group: build-push-${{ github.ref }}
-  cancel-in-progress: true
+  group: nginx-publish-${{ github.event_name == 'pull_request' && github.ref || 'dockerhub' }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: build (push on main + tags)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      ref: ${{ steps.version.outputs.ref }}
+    env:
+      IMAGE: armyguy255a/nginx
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Read the pinned nginx version from versions.json so main-branch
-      # pushes publish BOTH :alpine-latest AND the immutable
-      # :alpine-<nginx version> tag in one shot. Without this, the
-      # versioned tag would only get cut when check-versions.yml pushed
-      # a v<nginx> git tag, leaving the in-between main pushes (manual
-      # edits, Dockerfile tweaks, etc.) un-versioned on Docker Hub.
-      - name: Read nginx version from versions.json
-        id: nginx
+      - name: Validate version and publication target
+        id: version
+        env:
+          REQUESTED_REF: ${{ inputs.ref || github.ref }}
         run: |
           set -euo pipefail
-          NGINX_VERSION="$(jq -r .nginx versions.json)"
-          echo "version=${NGINX_VERSION}" >> "$GITHUB_OUTPUT"
+          VERSION="$(jq -er '.nginx | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' versions.json)"
+          grep -qx "ENV NGINX_VERSION=$VERSION" Dockerfile.alpine
+          if [[ "$REQUESTED_REF" == refs/tags/* ]] && [ "$REQUESTED_REF" != "refs/tags/v$VERSION" ]; then
+            echo 'Release tag does not match nginx version' >&2; exit 1
+          fi
+          PUBLISH=false
+          ROLLING=false
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            if [[ "$REQUESTED_REF" == refs/tags/v* ]]; then
+              PUBLISH=true
+            elif [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+              PUBLISH=true
+              ROLLING=true
+            else
+              echo 'Only current main or a matching release tag can publish' >&2; exit 1
+            fi
+          fi
+          {
+            echo "version=$VERSION"
+            echo "publish=$PUBLISH"
+            echo "rolling=$ROLLING"
+            echo "ref=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Derive image tags + labels from ref
-        id: meta
-        uses: docker/metadata-action@v5
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image for verification
+        uses: docker/build-push-action@v6
         with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=alpine-latest,enable={{is_default_branch}}
-            type=raw,value=alpine-${{ steps.nginx.outputs.version }},enable={{is_default_branch}}
-            type=match,pattern=v(.+),group=1,prefix=alpine-
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          context: .
+          file: Dockerfile.alpine
+          load: true
+          tags: nginx-ci:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # Log in to Docker Hub only when we're actually going to push (push
-      # to main or tag). PR runs skip login so a forked-PR contributor
-      # can't trigger pushes from a malicious build context.
+      - name: Smoke test image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm nginx-ci:verify nginx -v 2>&1 | grep -F "nginx/$VERSION"
+          docker run --rm nginx-ci:verify nginx -t
+          docker run -d --name nginx-smoke -p 127.0.0.1:8080:8080 nginx-ci:verify
+          trap 'docker logs nginx-smoke; docker rm -f nginx-smoke' EXIT
+          curl --retry 10 --retry-connrefused --retry-delay 2 --fail http://127.0.0.1:8080/
+
       - name: Log in to Docker Hub
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: steps.version.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Always build. Pushes only on push events (main or tags) — PRs
-      # exercise the Dockerfile end-to-end as a regression check without
-      # leaking pre-merge images to Docker Hub. Provenance + SBOM are
-      # attached on every PUSHED image (Docker Scout policy: Supply
-      # chain attestations) but DISABLED on PR builds — the local docker
-      # daemon's load exporter doesn't support the manifest-list output
-      # that provenance/sbom produces, so PR builds would fail with
-      # "docker exporter does not currently support exporting manifest lists".
-      - name: Build (and push on main/tag)
-        uses: docker/build-push-action@v5
+      - name: Prepare publication tags
+        id: tags
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ROLLING: ${{ steps.version.outputs.rolling }}
+        run: |
+          set -euo pipefail
+          if [ "$ROLLING" = true ]; then
+            git fetch origin main
+            [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || {
+              echo 'main advanced during build; refusing to publish stale rolling tags' >&2; exit 1;
+            }
+          fi
+          {
+            echo 'tags<<EOF'
+            echo "$IMAGE:alpine-$VERSION"
+            echo "$IMAGE:sha-$(git rev-parse HEAD)"
+            if [ "$ROLLING" = true ]; then
+              echo "$IMAGE:alpine-latest"
+              echo "$IMAGE:latest"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish verified build layers with attestations
+        if: steps.version.outputs.publish == 'true'
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.alpine
-          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: ${{ github.event_name == 'pull_request' && 'false' || 'mode=max' }}
-          sbom: ${{ github.event_name != 'pull_request' }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: Summary
-        if: always()
+  release:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.ref }}
+          fetch-depth: 0
+      - name: Create release after successful publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          IMAGE: armyguy255a/nginx
         run: |
-          {
-            echo "## Build summary"
-            echo "- **Ref:** \`${{ github.ref }}\`"
-            echo "- **Event:** \`${{ github.event_name }}\`"
-            echo "- **Tags:**"
-            echo '  ```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '  ```'
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "- **Push:** skipped (PR build — verification only)"
-            else
-              echo "- **Push:** ✅ to Docker Hub"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          set -euo pipefail
+          TAG="v$VERSION"
+          if ! git show-ref --verify --quiet "refs/tags/$TAG"; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$TAG" -m "nginx $VERSION"
+            git push origin "refs/tags/$TAG"
+          fi
+          RESPONSE="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>&1)" && exit 0
+          [[ "$RESPONSE" == *'HTTP 404'* ]] || { echo "$RESPONSE" >&2; exit 1; }
+          gh release create "$TAG" --verify-tag --title "nginx $VERSION" \
+            --notes "Published Docker Hub image: $IMAGE:alpine-$VERSION."

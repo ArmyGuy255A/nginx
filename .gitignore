@@ -37,3 +37,5 @@ Services/*
 
 # Include all .placeholder files everywhere
 !.placeholder
+# Local automation diagnostics
+.codex/scratch/
