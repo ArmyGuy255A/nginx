@@ -2,11 +2,11 @@ FROM alpine:3.24.2
 
 WORKDIR /var/www/html
 
-ENV NGINX_VERSION=1.31.6
+ENV NGINX_VERSION=1.31.7
 ENV MORE_SET_HEADER_VERSION=0.40
 ENV FANCYINDEX=0.6.0
 ENV SUBSTITUTIONS_COMMIT=e12e965ac1837ca709709f9a26f572a54d83430e
-ENV OTEL_APK=nginx-module-otel-1.31.6.0.1.2-r1.apk
+ENV OTEL_APK=nginx-module-otel-1.31.7.0.1.2-r1.apk
 ENV MODULE_URL_BASE=https://nginx.org/packages/mainline/alpine/v3.24/main/x86_64/
 
 # Refresh apk index + upgrade every preinstalled package to the latest
