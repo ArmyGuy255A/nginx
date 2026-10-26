@@ -3,7 +3,7 @@
   "nginx": "1.31.8",
   "alpine": "3.24.3",
   "modules": {
-    "headers-more": "0.40",
+    "headers-more": "0.41",
     "fancyindex": "0.6.0",
     "substitutions": "e12e965ac1837ca709709f9a26f572a54d83430e",
     "otel-apk": "nginx-module-otel-1.31.8.0.1.2-r1.apk"
