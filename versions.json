@@ -1,7 +1,7 @@
 {
   "_description": "Pinned nginx, Alpine and module versions, updated with Dockerfile.alpine by check-versions.yml. The daily fresh rebuild also refreshes OS package patches. Alpine adoption requires an exact-version OpenTelemetry module and successful module smoke tests; publication requires the vulnerability gate to pass.",
   "nginx": "1.31.8",
-  "alpine": "3.24.3",
+  "alpine": "3.24.4",
   "modules": {
     "headers-more": "0.41",
     "fancyindex": "0.6.0",
